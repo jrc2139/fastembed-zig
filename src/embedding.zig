@@ -18,6 +18,11 @@ pub const EmbedderError = error{
     OutOfMemory,
 };
 
+/// Execution provider types (re-exported from onnx module)
+pub const ExecutionProvider = onnx.ExecutionProvider;
+pub const CoreMLOptions = onnx.CoreMLOptions;
+pub const CoreMLComputeUnits = onnx.CoreMLComputeUnits;
+
 /// Options for creating an Embedder
 pub const EmbedderOptions = struct {
     /// Model to use (default: BGE small English)
@@ -28,6 +33,8 @@ pub const EmbedderOptions = struct {
     max_seq_len: usize = 0,
     /// Whether to normalize embeddings (default: use model setting)
     normalize: ?bool = null,
+    /// Execution provider (default: CPU)
+    execution_provider: ExecutionProvider = .{ .cpu = {} },
 };
 
 /// Text embedder using transformer models
@@ -80,8 +87,10 @@ pub const Embedder = struct {
         defer allocator.free(model_onnx_path_z);
         @memcpy(model_onnx_path_z, model_onnx_path);
 
-        // Load ONNX model
-        var session = onnx.Session.init(env, model_onnx_path_z, allocator) catch {
+        // Load ONNX model with configured execution provider
+        var session = onnx.Session.initWithOptions(env, model_onnx_path_z, allocator, .{
+            .execution_provider = options.execution_provider,
+        }) catch {
             return EmbedderError.ModelError;
         };
         errdefer session.deinit();
@@ -122,7 +131,10 @@ pub const Embedder = struct {
         var seq_lengths = self.allocator.alloc(usize, batch_size) catch return EmbedderError.OutOfMemory;
         defer self.allocator.free(seq_lengths);
 
+        // Phase 1.3: Pre-allocate token buffer with estimated capacity
+        const estimated_tokens = batch_size * self.max_seq_len;
         var all_tokens = std.ArrayListUnmanaged(i64){};
+        all_tokens.ensureTotalCapacity(self.allocator, estimated_tokens) catch return EmbedderError.OutOfMemory;
         defer all_tokens.deinit(self.allocator);
 
         var actual_seq_len: usize = 0;
@@ -138,10 +150,8 @@ pub const Embedder = struct {
             seq_lengths[i] = seq_len;
             actual_seq_len = @max(actual_seq_len, seq_len);
 
-            // Store tokens
-            for (tokens[0..seq_len]) |tok| {
-                all_tokens.append(self.allocator, tok) catch return EmbedderError.OutOfMemory;
-            }
+            // Store tokens - capacity already ensured, use appendAssumeCapacity or append
+            all_tokens.appendSlice(self.allocator, tokens[0..seq_len]) catch return EmbedderError.OutOfMemory;
         }
 
         // Pad all sequences to same length
@@ -151,26 +161,34 @@ pub const Embedder = struct {
         defer self.allocator.free(input_ids);
         var attention_mask = self.allocator.alloc(i64, batch_size * padded_len) catch return EmbedderError.OutOfMemory;
         defer self.allocator.free(attention_mask);
-        var token_type_ids = self.allocator.alloc(i64, batch_size * padded_len) catch return EmbedderError.OutOfMemory;
-        defer self.allocator.free(token_type_ids);
 
-        // Initialize with padding
-        @memset(input_ids, 0);
+        // Phase 1.4: Only allocate token_type_ids if model uses them
+        var token_type_ids: ?[]i64 = if (self.config.use_token_type_ids) blk: {
+            const ids = self.allocator.alloc(i64, batch_size * padded_len) catch return EmbedderError.OutOfMemory;
+            @memset(ids, 0); // token_type_ids are always 0 for single-sequence
+            break :blk ids;
+        } else null;
+        defer if (token_type_ids) |ids| self.allocator.free(ids);
+
+        // Phase 1.2: Only initialize attention_mask with zeros (for padding)
+        // input_ids will be fully written, token_type_ids initialized above if needed
         @memset(attention_mask, 0);
-        @memset(token_type_ids, 0);
 
-        // Copy tokenized data using tracked sequence lengths
+        // Phase 1.1: Use memcpy for token copying instead of element-by-element
         var src_offset: usize = 0;
         for (0..batch_size) |b| {
             const seq_len = seq_lengths[b];
             const dst_offset = b * padded_len;
 
-            // Copy tokens for this sequence
-            for (0..seq_len) |i| {
-                input_ids[dst_offset + i] = all_tokens.items[src_offset + i];
-                attention_mask[dst_offset + i] = 1;
-                token_type_ids[dst_offset + i] = 0;
+            // Bulk copy tokens using memcpy
+            @memcpy(input_ids[dst_offset..][0..seq_len], all_tokens.items[src_offset..][0..seq_len]);
+            // Bulk set attention mask to 1 for valid tokens
+            @memset(attention_mask[dst_offset..][0..seq_len], 1);
+            // Pad input_ids with zeros for remaining positions
+            if (seq_len < padded_len) {
+                @memset(input_ids[dst_offset + seq_len ..][0 .. padded_len - seq_len], 0);
             }
+
             src_offset += seq_len;
         }
 
@@ -178,7 +196,7 @@ pub const Embedder = struct {
         const hidden_states = self.session.run(
             input_ids,
             attention_mask,
-            if (self.config.use_token_type_ids) token_type_ids else null,
+            token_type_ids,
             batch_size,
             padded_len,
             self.config.output_name,

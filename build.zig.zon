@@ -9,4 +9,9 @@
         "src",
         "examples",
     },
+    .dependencies = .{
+        .tokenizer = .{
+            .path = "../tokenizer-zig",
+        },
+    },
 }

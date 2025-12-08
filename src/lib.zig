@@ -41,6 +41,11 @@ pub const Embedder = embedding.Embedder;
 pub const EmbedderOptions = embedding.EmbedderOptions;
 pub const EmbedderError = embedding.EmbedderError;
 
+// Execution providers (for GPU/Neural Engine acceleration)
+pub const ExecutionProvider = embedding.ExecutionProvider;
+pub const CoreMLOptions = embedding.CoreMLOptions;
+pub const CoreMLComputeUnits = embedding.CoreMLComputeUnits;
+
 // Model registry
 pub const models = @import("models.zig");
 pub const Model = models.Model;
@@ -53,13 +58,12 @@ pub const PoolingStrategy = pooling.PoolingStrategy;
 // Normalization utilities
 pub const normalize = @import("normalize.zig");
 
-// Tokenizer
+// Tokenizer (pure Zig implementation via tokenizer-zig)
 pub const tokenizer = @import("tokenizer/tokenizer.zig");
 pub const Tokenizer = tokenizer.Tokenizer;
 pub const TokenizerError = tokenizer.TokenizerError;
 
-// Low-level access
-pub const tokenizer_c_api = @import("tokenizer/c_api.zig");
+// Low-level access (ONNX)
 pub const onnx = @import("onnx/session.zig");
 
 // Utility functions

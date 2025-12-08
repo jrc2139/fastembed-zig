@@ -8,11 +8,17 @@ pub fn build(b: *std.Build) void {
     const use_static = b.option(bool, "static", "Link against static ONNX Runtime libraries") orelse false;
 
     // -------------------------------------------------------------------------
-    // Dependency paths
+    // Dependencies
     // -------------------------------------------------------------------------
-    const tokenizers_include = b.path("deps/tokenizers/include");
-    const tokenizers_lib = b.path("deps/tokenizers/lib");
 
+    // Tokenizer dependency (pure Zig - no more C library!)
+    const tokenizer_dep = b.dependency("tokenizer", .{
+        .target = target,
+        .optimize = optimize,
+    });
+    const tokenizer_mod = tokenizer_dep.module("tokenizer");
+
+    // ONNX Runtime paths
     const ort_include = if (use_static)
         b.path("deps/onnxruntime-static/include")
     else
@@ -24,24 +30,16 @@ pub fn build(b: *std.Build) void {
         b.path("deps/onnxruntime/lib");
 
     // -------------------------------------------------------------------------
-    // Helper to configure a module with all dependencies
+    // Helper to configure a module with ONNX Runtime dependencies
     // -------------------------------------------------------------------------
-    const configureDeps = struct {
+    const configureOrt = struct {
         fn configure(
             module: *std.Build.Module,
             tgt: std.Build.ResolvedTarget,
-            tok_include: std.Build.LazyPath,
-            tok_lib: std.Build.LazyPath,
-            tok_obj: std.Build.LazyPath,
             o_include: std.Build.LazyPath,
             o_lib: std.Build.LazyPath,
             static: bool,
         ) void {
-            // Tokenizers
-            module.addIncludePath(tok_include);
-            module.addLibraryPath(tok_lib);
-            module.addObjectFile(tok_obj);
-
             // ONNX Runtime
             module.addIncludePath(o_include);
             module.addLibraryPath(o_lib);
@@ -63,8 +61,6 @@ pub fn build(b: *std.Build) void {
             // System dependencies
             module.link_libc = true;
             if (tgt.result.os.tag == .macos) {
-                module.linkFramework("Security", .{});
-                module.linkFramework("SystemConfiguration", .{});
                 module.linkFramework("Foundation", .{});
                 module.linkFramework("CoreML", .{});
             }
@@ -78,37 +74,25 @@ pub fn build(b: *std.Build) void {
         .root_source_file = b.path("src/lib.zig"),
         .target = target,
         .optimize = optimize,
+        .imports = &.{
+            .{ .name = "tokenizer", .module = tokenizer_mod },
+        },
     });
-    configureDeps(
-        fastembed_mod,
-        target,
-        tokenizers_include,
-        tokenizers_lib,
-        b.path("deps/tokenizers/lib/libtokenizers_c.a"),
-        ort_include,
-        ort_lib,
-        use_static,
-    );
+    configureOrt(fastembed_mod, target, ort_include, ort_lib, use_static);
 
     // Export the configured module for other packages
     _ = b.addModule("fastembed", .{
         .root_source_file = b.path("src/lib.zig"),
         .target = target,
         .optimize = optimize,
+        .imports = &.{
+            .{ .name = "tokenizer", .module = tokenizer_mod },
+        },
     });
 
     // Also add the dependency paths to the exported module
     const exported_mod = b.modules.get("fastembed").?;
-    configureDeps(
-        exported_mod,
-        target,
-        tokenizers_include,
-        tokenizers_lib,
-        b.path("deps/tokenizers/lib/libtokenizers_c.a"),
-        ort_include,
-        ort_lib,
-        use_static,
-    );
+    configureOrt(exported_mod, target, ort_include, ort_lib, use_static);
 
     // -------------------------------------------------------------------------
     // Tests
@@ -118,18 +102,12 @@ pub fn build(b: *std.Build) void {
             .root_source_file = b.path("src/lib.zig"),
             .target = target,
             .optimize = optimize,
+            .imports = &.{
+                .{ .name = "tokenizer", .module = tokenizer_mod },
+            },
         }),
     });
-    configureDeps(
-        lib_tests.root_module,
-        target,
-        tokenizers_include,
-        tokenizers_lib,
-        b.path("deps/tokenizers/lib/libtokenizers_c.a"),
-        ort_include,
-        ort_lib,
-        use_static,
-    );
+    configureOrt(lib_tests.root_module, target, ort_include, ort_lib, use_static);
 
     const run_lib_tests = b.addRunArtifact(lib_tests);
 
@@ -150,16 +128,7 @@ pub fn build(b: *std.Build) void {
             },
         }),
     });
-    configureDeps(
-        tokenize_example.root_module,
-        target,
-        tokenizers_include,
-        tokenizers_lib,
-        b.path("deps/tokenizers/lib/libtokenizers_c.a"),
-        ort_include,
-        ort_lib,
-        use_static,
-    );
+    configureOrt(tokenize_example.root_module, target, ort_include, ort_lib, use_static);
     b.installArtifact(tokenize_example);
 
     // -------------------------------------------------------------------------
@@ -176,16 +145,7 @@ pub fn build(b: *std.Build) void {
             },
         }),
     });
-    configureDeps(
-        embed_example.root_module,
-        target,
-        tokenizers_include,
-        tokenizers_lib,
-        b.path("deps/tokenizers/lib/libtokenizers_c.a"),
-        ort_include,
-        ort_lib,
-        use_static,
-    );
+    configureOrt(embed_example.root_module, target, ort_include, ort_lib, use_static);
     b.installArtifact(embed_example);
 
     const run_embed = b.addRunArtifact(embed_example);
@@ -212,16 +172,7 @@ pub fn build(b: *std.Build) void {
             },
         }),
     });
-    configureDeps(
-        benchmark_example.root_module,
-        target,
-        tokenizers_include,
-        tokenizers_lib,
-        b.path("deps/tokenizers/lib/libtokenizers_c.a"),
-        ort_include,
-        ort_lib,
-        use_static,
-    );
+    configureOrt(benchmark_example.root_module, target, ort_include, ort_lib, use_static);
     b.installArtifact(benchmark_example);
 
     const run_benchmark = b.addRunArtifact(benchmark_example);
@@ -235,6 +186,23 @@ pub fn build(b: *std.Build) void {
     benchmark_step.dependOn(&run_benchmark.step);
 
     // -------------------------------------------------------------------------
+    // Example: Test Batch
+    // -------------------------------------------------------------------------
+    const test_batch_example = b.addExecutable(.{
+        .name = "test_batch",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("examples/test_batch.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "fastembed", .module = fastembed_mod },
+            },
+        }),
+    });
+    configureOrt(test_batch_example.root_module, target, ort_include, ort_lib, use_static);
+    b.installArtifact(test_batch_example);
+
+    // -------------------------------------------------------------------------
     // Check (for ZLS)
     // -------------------------------------------------------------------------
     const check = b.addTest(.{
@@ -242,9 +210,11 @@ pub fn build(b: *std.Build) void {
             .root_source_file = b.path("src/lib.zig"),
             .target = target,
             .optimize = optimize,
+            .imports = &.{
+                .{ .name = "tokenizer", .module = tokenizer_mod },
+            },
         }),
     });
-    check.root_module.addIncludePath(tokenizers_include);
     check.root_module.addIncludePath(ort_include);
 
     const check_step = b.step("check", "Check for compilation errors");

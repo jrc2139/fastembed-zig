@@ -4,6 +4,11 @@
 
 const std = @import("std");
 const c_api = @import("c_api.zig");
+const provider = @import("provider.zig");
+
+pub const ExecutionProvider = provider.ExecutionProvider;
+pub const CoreMLOptions = provider.CoreMLOptions;
+pub const CoreMLComputeUnits = provider.CoreMLComputeUnits;
 
 /// Error type for ONNX operations
 pub const OnnxError = error{
@@ -16,6 +21,8 @@ pub const OnnxError = error{
     InvalidShape,
     AllocatorError,
     OutOfMemory,
+    ProviderConfigurationFailed,
+    ProviderNotAvailable,
 };
 
 /// ONNX Runtime Environment (one per application)
@@ -59,11 +66,23 @@ pub const Session = struct {
     input_names: std.ArrayList([:0]const u8),
     output_names: std.ArrayList([:0]const u8),
     zig_allocator: std.mem.Allocator,
+    execution_provider: ExecutionProvider,
 
     const Self = @This();
 
-    /// Load a model from file
+    /// Session initialization options
+    pub const InitOptions = struct {
+        /// Execution provider to use (default: CPU)
+        execution_provider: ExecutionProvider = .{ .cpu = {} },
+    };
+
+    /// Load a model from file with default options (CPU provider)
     pub fn init(env: Environment, model_path: [:0]const u8, allocator: std.mem.Allocator) OnnxError!Self {
+        return initWithOptions(env, model_path, allocator, .{});
+    }
+
+    /// Load a model from file with custom options
+    pub fn initWithOptions(env: Environment, model_path: [:0]const u8, allocator: std.mem.Allocator, options: InitOptions) OnnxError!Self {
         const api = env.api;
 
         // Create session options
@@ -81,10 +100,13 @@ pub const Session = struct {
             api.ReleaseStatus.?(status);
         }
 
-        // CoreML support: currently disabled as it provides minimal benefit
-        // CoreML EP only supports ~7-20% of nodes in modern embedding models
-        // CPU execution is actually faster for these models on Apple Silicon
-        std.log.info("Using CPU execution provider", .{});
+        // Configure execution provider
+        const exec_provider = options.execution_provider.resolve();
+        exec_provider.apply(opts.?) catch |err| {
+            // If provider fails, fall back to CPU
+            std.log.warn("Failed to configure {s} provider: {}, falling back to CPU", .{ options.execution_provider.getName(), err });
+        };
+        std.log.info("Using {s} execution provider", .{exec_provider.getName()});
 
         // Create session
         var session: ?*c_api.OrtSession = null;
@@ -150,6 +172,7 @@ pub const Session = struct {
             .input_names = input_names,
             .output_names = output_names,
             .zig_allocator = allocator,
+            .execution_provider = exec_provider,
         };
     }
 

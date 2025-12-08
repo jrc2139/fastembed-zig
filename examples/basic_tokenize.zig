@@ -64,7 +64,7 @@ pub fn main() !void {
     std.debug.print("\n", .{});
 
     // Decode back to text
-    if (tokenizer.decode(tokens, false)) |decoded| {
-        std.debug.print("\nDecoded: \"{s}\"\n", .{decoded});
-    }
+    const decoded = try tokenizer.decodeAlloc(allocator, tokens, false);
+    defer allocator.free(decoded);
+    std.debug.print("\nDecoded: \"{s}\"\n", .{decoded});
 }
