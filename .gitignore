@@ -1,10 +1,12 @@
 ### zig ###
 # Zig programming language
 
+.zig-cache/
 zig-cache/
 zig-out/
 build/
 build-*/
 docgen_tmp/
-
-.zig-cache
+deps/
+deps.zig
+models/

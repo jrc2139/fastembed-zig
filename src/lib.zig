@@ -1,0 +1,84 @@
+//! fastembed-zig - Fast text embeddings in Zig
+//!
+//! A high-performance text embedding library built on ONNX Runtime
+//! and HuggingFace tokenizers.
+//!
+//! ## Quick Start
+//!
+//! ```zig
+//! const fe = @import("fastembed");
+//!
+//! pub fn main() !void {
+//!     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+//!     defer _ = gpa.deinit();
+//!     const allocator = gpa.allocator();
+//!
+//!     // Initialize embedder with local model
+//!     var embedder = try fe.Embedder.init(allocator, .{
+//!         .model_path = "models/bge-small-en-v1.5",
+//!     });
+//!     defer embedder.deinit();
+//!
+//!     // Generate embeddings
+//!     const texts = &[_][]const u8{ "Hello world", "How are you?" };
+//!     const embeddings = try embedder.embed(texts);
+//!     defer allocator.free(embeddings);
+//!
+//!     // embeddings is []f32 — [num_texts * hidden_dim] flattened
+//!     const dim = embedder.getDimension(); // 384 for BGE-small
+//!     for (0..texts.len) |i| {
+//!         const vec = embeddings[i * dim .. (i + 1) * dim];
+//!         std.debug.print("Embedding {d}: [{d:.4}, ...]\n", .{ i, vec[0] });
+//!     }
+//! }
+//! ```
+
+const std = @import("std");
+
+// Core embedding functionality
+pub const embedding = @import("embedding.zig");
+pub const Embedder = embedding.Embedder;
+pub const EmbedderOptions = embedding.EmbedderOptions;
+pub const EmbedderError = embedding.EmbedderError;
+
+// Model registry
+pub const models = @import("models.zig");
+pub const Model = models.Model;
+pub const ModelConfig = models.ModelConfig;
+
+// Pooling strategies
+pub const pooling = @import("pooling.zig");
+pub const PoolingStrategy = pooling.PoolingStrategy;
+
+// Normalization utilities
+pub const normalize = @import("normalize.zig");
+
+// Tokenizer
+pub const tokenizer = @import("tokenizer/tokenizer.zig");
+pub const Tokenizer = tokenizer.Tokenizer;
+pub const TokenizerError = tokenizer.TokenizerError;
+
+// Low-level access
+pub const tokenizer_c_api = @import("tokenizer/c_api.zig");
+pub const onnx = @import("onnx/session.zig");
+
+// Utility functions
+
+/// Compute cosine similarity between two embedding vectors
+pub fn cosineSimilarity(a: []const f32, b: []const f32) f32 {
+    return normalize.cosineSimilarity(a, b);
+}
+
+/// Compute dot product between two vectors (for normalized embeddings)
+pub fn dotProduct(a: []const f32, b: []const f32) f32 {
+    return normalize.dotProduct(a, b);
+}
+
+test {
+    // Run all module tests
+    std.testing.refAllDecls(@This());
+}
+
+test "library compiles" {
+    try std.testing.expect(true);
+}

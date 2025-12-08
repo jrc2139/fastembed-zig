@@ -1,0 +1,6 @@
+id: vk0sfyv93sus98rz1b73f3htuifyjjb9m0ujkfcn0p5f07a9
+name: fastembed-zig
+main: src/lib.zig
+license: MIT
+description: fastembed written in zig
+dependencies:
