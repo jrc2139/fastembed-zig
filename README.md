@@ -1,16 +1,17 @@
 # fastembed-zig
 
-Fast, lightweight text embeddings in Zig. Generate semantic embeddings for search, RAG, and similarity matching.
+Fast, lightweight text embeddings and reranking in Zig. Generate semantic embeddings for search, RAG, and similarity matching.
 
 Built on [ONNX Runtime](https://onnxruntime.ai/) and [HuggingFace Tokenizers](https://github.com/huggingface/tokenizers).
 
 ## Features
 
 - High-performance text embeddings using ONNX models
-- HuggingFace tokenizer support (BERT, RoBERTa, GPT-2, etc.)
+- Cross-encoder reranking for two-stage retrieval
+- HuggingFace tokenizer support (BERT, RoBERTa, etc.)
 - Multiple pooling strategies (CLS token, mean pooling)
 - L2 normalization for cosine similarity
-- Model registry with popular embedding models (BGE, MiniLM, E5)
+- Model registry with popular embedding models (Granite, BGE, MiniLM, Gemma)
 - Pure Zig with zero garbage collection
 
 ## Quick Start
@@ -26,7 +27,8 @@ pub fn main() !void {
 
     // Initialize embedder
     var embedder = try fe.Embedder.init(allocator, .{
-        .model_path = "models/bge-small-en-v1.5",
+        .model_path = "models/granite-embedding-small-english-r2-qint8",
+        .model = .granite_embedding_small_english_r2_qint8,
     });
     defer embedder.deinit();
 
@@ -39,12 +41,37 @@ pub fn main() !void {
     defer allocator.free(embeddings);
 
     // Compute similarity
-    const dim = embedder.getDimension(); // 384 for BGE-small
+    const dim = embedder.getDimension(); // 384 for Granite-small
     const vec1 = embeddings[0..dim];
     const vec2 = embeddings[dim .. 2 * dim];
     const similarity = fe.cosineSimilarity(vec1, vec2);
     std.debug.print("Similarity: {d:.4}\n", .{similarity});
 }
+```
+
+## Reranking
+
+Two-stage retrieval with cross-encoder reranking:
+
+```zig
+// Initialize reranker
+var reranker = try fe.Reranker.init(allocator, .{
+    .model_path = "models/granite-reranker-english-r2-qint8-arm64",
+    .model = .granite_reranker_english_r2_qint8_arm64,
+});
+defer reranker.deinit();
+
+// Rerank documents for a query
+const query = "What is machine learning?";
+const documents = &[_][]const u8{
+    "ML is a subset of AI",
+    "The weather is nice today",
+    "Neural networks learn from data",
+};
+
+const scores = try reranker.rerank(query, documents);
+defer allocator.free(scores);
+// scores[0] and scores[2] will be high, scores[1] will be low
 ```
 
 ## Installation
@@ -81,8 +108,9 @@ cd fastembed-zig
 # Build
 zig build
 
-# Run example
-zig build run -- models/bge-small-en-v1.5 "Hello world"
+# Run examples
+zig build example-embed
+zig build example-tokenize
 
 # Run tests
 zig build test
@@ -90,22 +118,27 @@ zig build test
 
 ## Supported Models
 
+### Embedding Models
+
 | Model | Dimensions | Size | Use Case |
 |-------|-----------|------|----------|
-| `bge-small-en-v1.5` | 384 | ~33MB | General purpose, English |
-| `bge-base-en-v1.5` | 768 | ~109MB | Higher quality, English |
-| `all-MiniLM-L6-v2` | 384 | ~23MB | Fast, multilingual |
-| `e5-small-v2` | 384 | ~33MB | Asymmetric retrieval |
+| `granite_embedding_small_english_r2_qint8` | 384 | ~47MB | Default, ARM64 optimized |
+| `granite_embedding_small_english_r2_q4` | 384 | ~47MB | 4-bit quantized |
+| `granite_embedding_small_english_r2` | 384 | ~47MB | FP32 |
+| `embedding_gemma_300m_q4` | 768 | ~300MB | Higher quality |
+| `embedding_gemma_300m_fp16` | 768 | ~600MB | Gemma FP16 |
+| `granite_embedding_english_r2` | 768 | ~137MB | Granite large |
+| `bge_small_en_v1_5` | 384 | ~33MB | BGE small English |
+| `all_minilm_l6_v2` | 384 | ~23MB | Fast, multilingual |
+| `multilingual_e5_large` | 1024 | ~1GB | Multilingual |
 
-Download models from [HuggingFace](https://huggingface.co/models?library=onnx&sort=downloads&search=embedding) or use the model registry:
+### Reranker Models
 
-```zig
-// Using model registry
-const model = fe.models.get(.bge_small_en_v1_5);
-var embedder = try fe.Embedder.init(allocator, .{
-    .model = model,
-});
-```
+| Model | Size | Use Case |
+|-------|------|----------|
+| `granite_reranker_english_r2_qint8_arm64` | ~155MB | ARM64 optimized, default |
+
+Download models from [HuggingFace](https://huggingface.co/models?library=onnx&sort=downloads&search=embedding).
 
 ## API Reference
 
@@ -115,6 +148,7 @@ var embedder = try fe.Embedder.init(allocator, .{
 // Initialize
 var embedder = try fe.Embedder.init(allocator, .{
     .model_path = "path/to/model",      // Local model directory
+    .model = .granite_embedding_small_english_r2_qint8,
     .pooling = .mean,                    // .cls or .mean
     .normalize = true,                   // L2 normalize output
     .max_length = 512,                   // Max tokens per input
@@ -127,7 +161,21 @@ defer allocator.free(embeddings);
 
 // Get model info
 const dim = embedder.getDimension();     // 384, 768, etc.
-const vocab_size = embedder.getVocabSize();
+```
+
+### Reranker
+
+```zig
+// Initialize
+var reranker = try fe.Reranker.init(allocator, .{
+    .model_path = "path/to/reranker",
+    .model = .granite_reranker_english_r2_qint8_arm64,
+});
+defer reranker.deinit();
+
+// Rerank documents
+const scores = try reranker.rerank(query, documents);
+defer allocator.free(scores);
 ```
 
 ### Tokenizer
@@ -166,20 +214,24 @@ fastembed-zig/
 ├── src/
 │   ├── lib.zig           # Public API
 │   ├── embedding.zig     # Embedder implementation
+│   ├── reranker.zig      # Reranker implementation
 │   ├── models.zig        # Model registry
 │   ├── pooling.zig       # Pooling strategies
 │   ├── normalize.zig     # L2 normalization
 │   ├── tokenizer/
-│   │   ├── tokenizer.zig # High-level tokenizer
-│   │   └── c_api.zig     # C bindings
+│   │   └── tokenizer.zig # High-level tokenizer
 │   └── onnx/
-│       └── session.zig   # ONNX Runtime wrapper
+│       ├── session.zig   # ONNX Runtime wrapper
+│       ├── c_api.zig     # C bindings
+│       └── provider.zig  # Execution providers (CoreML, etc.)
 ├── examples/
 │   ├── basic_embed.zig   # Embedding example
-│   └── basic_tokenize.zig # Tokenizer example
+│   ├── basic_tokenize.zig # Tokenizer example
+│   ├── benchmark.zig     # Performance benchmarks
+│   └── test_batch.zig    # Batch processing tests
 ├── deps/
 │   ├── tokenizers/       # Pre-built tokenizers-cpp
-│   └── tokenizers-cpp/   # Source for rebuilding
+│   └── onnxruntime/      # ONNX Runtime library
 └── models/               # Downloaded models
 ```
 
@@ -187,24 +239,14 @@ fastembed-zig/
 
 ### Runtime
 
-- ONNX Runtime 1.23+ (dynamic or static linking)
+- ONNX Runtime 1.23+ (dynamic linking)
 - tokenizers-cpp (HuggingFace tokenizers via C FFI)
 
 ### System (macOS)
 
 - Security.framework
 - SystemConfiguration.framework
-
-### Building tokenizers-cpp
-
-```bash
-cd deps/tokenizers-cpp
-git submodule update --init --recursive
-mkdir build && cd build
-cmake .. -DCMAKE_BUILD_TYPE=Release
-make -j$(nproc)
-cp libtokenizers_c.a ../deps/tokenizers/lib/
-```
+- CoreML.framework (optional, for acceleration)
 
 ## Performance
 
@@ -212,10 +254,11 @@ Benchmarks on Apple M4 Pro:
 
 | Operation | Time |
 |-----------|------|
-| Tokenize (short text) | ~50us |
-| Tokenize (512 tokens) | ~200us |
-| Embed (single, BGE-small) | ~5ms |
+| Tokenize (short text) | ~50μs |
+| Tokenize (512 tokens) | ~200μs |
+| Embed (single, Granite-small) | ~5ms |
 | Embed (batch of 32) | ~40ms |
+| Rerank (query + 10 docs) | ~50ms |
 
 ## Use Cases
 
@@ -248,18 +291,16 @@ for (0..docs.len) |i| {
 }
 ```
 
-### RAG (Retrieval Augmented Generation)
+### Two-Stage Retrieval (RAG)
 
 ```zig
-// Embed chunks and store in vector DB
-for (chunks) |chunk| {
-    const emb = try embedder.embed(&[_][]const u8{chunk});
-    try vector_db.insert(chunk, emb[0..dim]);
-}
+// Stage 1: Fast embedding search
+const candidates = try embedder.embed(all_documents);
+const top_k = findTopK(query_embedding, candidates, 100);
 
-// Retrieve relevant context for LLM
-const query_emb = try embedder.embed(&[_][]const u8{user_query});
-const relevant = try vector_db.search(query_emb[0..dim], .{ .top_k = 5 });
+// Stage 2: Rerank with cross-encoder
+const reranked = try reranker.rerank(query, top_k);
+const best_docs = sortByScore(top_k, reranked)[0..10];
 ```
 
 ## Comparison to Alternatives
@@ -276,6 +317,7 @@ MIT
 
 ## Related Projects
 
+- [osgrep-zig](../osgrep-zig) - Semantic code search using fastembed
 - [onnxruntime-zig](../onnxruntime-zig) - ONNX Runtime bindings for Zig
 - [tokenizers-cpp](https://github.com/mlc-ai/tokenizers-cpp) - C++ wrapper for HuggingFace tokenizers
 - [fastembed](https://github.com/qdrant/fastembed) - Python implementation (inspiration)
