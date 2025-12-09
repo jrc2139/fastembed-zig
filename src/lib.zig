@@ -60,6 +60,13 @@ pub const PoolingStrategy = pooling.PoolingStrategy;
 // Normalization utilities
 pub const normalize = @import("normalize.zig");
 
+// Reranker (cross-encoder for semantic reranking)
+pub const reranker = @import("reranker.zig");
+pub const Reranker = reranker.Reranker;
+pub const RerankerOptions = reranker.RerankerOptions;
+pub const RerankerError = reranker.RerankerError;
+pub const RerankerModel = reranker.RerankerModel;
+
 // Tokenizer (pure Zig implementation via tokenizer-zig)
 pub const tokenizer = @import("tokenizer/tokenizer.zig");
 pub const Tokenizer = tokenizer.Tokenizer;
