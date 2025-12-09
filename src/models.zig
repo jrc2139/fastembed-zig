@@ -2,6 +2,8 @@
 //!
 //! Defines metadata and configuration for supported models.
 
+const std = @import("std");
+const builtin = @import("builtin");
 const pooling = @import("pooling.zig");
 
 /// Supported embedding models
@@ -26,6 +28,10 @@ pub const Model = enum {
     granite_embedding_english_r2,
     /// IBM Granite Embedding English R2 FP16 embedded (768 dimensions) - for CoreML
     granite_embedding_english_r2_fp16,
+    /// IBM Granite Embedding Small English R2 (384 dimensions) - 47M params, fast
+    granite_embedding_small_english_r2,
+    /// IBM Granite Embedding Small English R2 Q4 quantized (384 dimensions) - fastest
+    granite_embedding_small_english_r2_q4,
 
     /// Get model configuration
     pub fn getConfig(self: Model) ModelConfig {
@@ -190,6 +196,38 @@ pub const Model = enum {
                 // FP16 uses more memory than quantized
                 .memory_profile = .{ .base_memory_mb = 2000, .per_batch_item_mb = 100.0, .optimal_cpu_batch = 8, .optimal_gpu_batch = 16 },
             },
+            .granite_embedding_small_english_r2 => .{
+                .name = "granite-embedding-small-english-r2",
+                .hf_repo = "onnx-community/granite-embedding-small-english-r2-ONNX",
+                .hidden_dim = 384,
+                .max_seq_len = 8192,
+                .pooling = .mean,
+                .normalize = true,
+                .query_prefix = null,
+                .passage_prefix = null,
+                .use_token_type_ids = false, // ModernBERT doesn't use token_type_ids
+                .model_file = "onnx/model.onnx",
+                .output_is_pooled = false,
+                .output_name = null,
+                // Small model (47M params) - fast and memory efficient
+                .memory_profile = .{ .base_memory_mb = 200, .per_batch_item_mb = 10.0, .optimal_cpu_batch = 32, .optimal_gpu_batch = 64 },
+            },
+            .granite_embedding_small_english_r2_q4 => .{
+                .name = "granite-embedding-small-english-r2-q4",
+                .hf_repo = "onnx-community/granite-embedding-small-english-r2-ONNX",
+                .hidden_dim = 384,
+                .max_seq_len = 8192,
+                .pooling = .mean,
+                .normalize = true,
+                .query_prefix = null,
+                .passage_prefix = null,
+                .use_token_type_ids = false,
+                .model_file = "onnx/model_quantized.onnx",
+                .output_is_pooled = false,
+                .output_name = null,
+                // Q4 quantized - smallest and fastest
+                .memory_profile = .{ .base_memory_mb = 100, .per_batch_item_mb = 5.0, .optimal_cpu_batch = 64, .optimal_gpu_batch = 128 },
+            },
         };
     }
 };
@@ -259,7 +297,81 @@ pub const MemoryProfile = struct {
     pub fn getDefaultBatch(self: MemoryProfile, is_gpu: bool) u32 {
         return if (is_gpu) self.optimal_gpu_batch else self.optimal_cpu_batch;
     }
+
+    /// Get optimal batch size with automatic memory detection
+    pub fn getAutoBatch(self: MemoryProfile, is_gpu: bool) u32 {
+        const available_mb = getAvailableMemoryMB();
+        if (available_mb > 0) {
+            return self.calculateOptimalBatch(available_mb, is_gpu);
+        }
+        return self.getDefaultBatch(is_gpu);
+    }
 };
+
+/// Get available system memory in MB
+/// Returns 0 if detection fails
+pub fn getAvailableMemoryMB() u32 {
+    if (builtin.os.tag == .macos) {
+        return getMacOSMemoryMB();
+    } else if (builtin.os.tag == .linux) {
+        return getLinuxMemoryMB();
+    }
+    return 0; // Unknown OS
+}
+
+fn getMacOSMemoryMB() u32 {
+    // Use sysctl to get physical memory
+    const c = @cImport({
+        @cInclude("sys/sysctl.h");
+    });
+
+    var mem_size: u64 = 0;
+    var size: usize = @sizeOf(u64);
+    var mib = [_]c_int{ c.CTL_HW, c.HW_MEMSIZE };
+
+    if (c.sysctl(&mib, 2, &mem_size, &size, null, 0) == 0) {
+        return @intCast(mem_size / (1024 * 1024));
+    }
+    return 0;
+}
+
+fn getLinuxMemoryMB() u32 {
+    // Read from /proc/meminfo
+    const file = std.fs.openFileAbsolute("/proc/meminfo", .{}) catch return 0;
+    defer file.close();
+
+    var buf: [256]u8 = undefined;
+    const bytes_read = file.read(&buf) catch return 0;
+    const content = buf[0..bytes_read];
+
+    // Parse "MemAvailable: XXXX kB" or fall back to "MemFree: XXXX kB"
+    if (parseMemInfoLine(content, "MemAvailable:")) |kb| {
+        return @intCast(kb / 1024);
+    }
+    if (parseMemInfoLine(content, "MemFree:")) |kb| {
+        return @intCast(kb / 1024);
+    }
+    return 0;
+}
+
+fn parseMemInfoLine(content: []const u8, prefix: []const u8) ?u64 {
+    var lines = std.mem.splitScalar(u8, content, '\n');
+    while (lines.next()) |line| {
+        if (std.mem.startsWith(u8, line, prefix)) {
+            // Skip prefix and whitespace
+            var rest = std.mem.trimLeft(u8, line[prefix.len..], " \t");
+            // Parse number
+            var num_end: usize = 0;
+            while (num_end < rest.len and rest[num_end] >= '0' and rest[num_end] <= '9') {
+                num_end += 1;
+            }
+            if (num_end > 0) {
+                return std.fmt.parseInt(u64, rest[0..num_end], 10) catch null;
+            }
+        }
+    }
+    return null;
+}
 
 /// Files needed for a model
 pub const ModelFiles = struct {
@@ -279,7 +391,6 @@ pub fn getHfUrl(repo: []const u8, filename: []const u8) []const u8 {
 }
 
 test "Model config" {
-    const std = @import("std");
     const config = Model.bge_small_en_v1_5.getConfig();
 
     try std.testing.expectEqual(@as(usize, 384), config.hidden_dim);
@@ -292,7 +403,6 @@ test "Model config" {
 // =============================================================================
 
 test "BGE small English config" {
-    const std = @import("std");
     const config = Model.bge_small_en_v1_5.getConfig();
 
     try std.testing.expectEqualStrings("bge-small-en-v1.5", config.name);
@@ -310,7 +420,6 @@ test "BGE small English config" {
 }
 
 test "all-MiniLM-L6-v2 config" {
-    const std = @import("std");
     const config = Model.all_minilm_l6_v2.getConfig();
 
     try std.testing.expectEqualStrings("all-MiniLM-L6-v2", config.name);
@@ -327,7 +436,6 @@ test "all-MiniLM-L6-v2 config" {
 }
 
 test "multilingual E5 large config" {
-    const std = @import("std");
     const config = Model.multilingual_e5_large.getConfig();
 
     try std.testing.expectEqualStrings("multilingual-e5-large", config.name);
@@ -342,7 +450,6 @@ test "multilingual E5 large config" {
 }
 
 test "BGE small Chinese config" {
-    const std = @import("std");
     const config = Model.bge_small_zh_v1_5.getConfig();
 
     try std.testing.expectEqualStrings("bge-small-zh-v1.5", config.name);
@@ -358,7 +465,6 @@ test "BGE small Chinese config" {
 }
 
 test "EmbeddingGemma 300M base config" {
-    const std = @import("std");
     const config = Model.embedding_gemma_300m.getConfig();
 
     try std.testing.expectEqualStrings("embeddinggemma-300m", config.name);
@@ -379,7 +485,6 @@ test "EmbeddingGemma 300M base config" {
 }
 
 test "EmbeddingGemma 300M Q4 config" {
-    const std = @import("std");
     const config = Model.embedding_gemma_300m_q4.getConfig();
 
     try std.testing.expectEqualStrings("embeddinggemma-300m-q4", config.name);
@@ -391,7 +496,6 @@ test "EmbeddingGemma 300M Q4 config" {
 }
 
 test "EmbeddingGemma 300M Q4F16 config" {
-    const std = @import("std");
     const config = Model.embedding_gemma_300m_q4f16.getConfig();
 
     try std.testing.expectEqualStrings("embeddinggemma-300m-q4f16", config.name);
@@ -402,7 +506,6 @@ test "EmbeddingGemma 300M Q4F16 config" {
 }
 
 test "EmbeddingGemma 300M FP16 config" {
-    const std = @import("std");
     const config = Model.embedding_gemma_300m_fp16.getConfig();
 
     try std.testing.expectEqualStrings("embeddinggemma-300m-fp16", config.name);
@@ -413,7 +516,6 @@ test "EmbeddingGemma 300M FP16 config" {
 }
 
 test "Granite Embedding English R2 config" {
-    const std = @import("std");
     const config = Model.granite_embedding_english_r2.getConfig();
 
     try std.testing.expectEqualStrings("granite-embedding-english-r2", config.name);
@@ -432,7 +534,6 @@ test "Granite Embedding English R2 config" {
 }
 
 test "Granite Embedding English R2 FP16 config" {
-    const std = @import("std");
     const config = Model.granite_embedding_english_r2_fp16.getConfig();
 
     try std.testing.expectEqualStrings("granite-embedding-english-r2-fp16", config.name);
@@ -444,7 +545,6 @@ test "Granite Embedding English R2 FP16 config" {
 }
 
 test "All models have valid configs" {
-    const std = @import("std");
     const models = [_]Model{
         .bge_small_en_v1_5,
         .all_minilm_l6_v2,
@@ -472,14 +572,13 @@ test "All models have valid configs" {
 }
 
 test "Model enum iteration" {
-    const std = @import("std");
+
     // Verify we have exactly 10 models
     const model_count = @typeInfo(Model).@"enum".fields.len;
     try std.testing.expectEqual(@as(usize, 10), model_count);
 }
 
 test "Pooling strategy distribution" {
-    const std = @import("std");
     var cls_count: usize = 0;
     var mean_count: usize = 0;
 
@@ -510,7 +609,6 @@ test "Pooling strategy distribution" {
 }
 
 test "Hidden dimensions" {
-    const std = @import("std");
 
     // 384 dim models (small)
     try std.testing.expectEqual(@as(usize, 384), Model.bge_small_en_v1_5.getConfig().hidden_dim);
@@ -528,7 +626,6 @@ test "Hidden dimensions" {
 }
 
 test "Max sequence lengths" {
-    const std = @import("std");
 
     // 256 for MiniLM
     try std.testing.expectEqual(@as(usize, 256), Model.all_minilm_l6_v2.getConfig().max_seq_len);
@@ -546,7 +643,6 @@ test "Max sequence lengths" {
 }
 
 test "Token type IDs requirement" {
-    const std = @import("std");
 
     // BERT-based models use token_type_ids
     try std.testing.expect(Model.bge_small_en_v1_5.getConfig().use_token_type_ids);
@@ -566,7 +662,6 @@ test "Token type IDs requirement" {
 }
 
 test "Pre-pooled vs requires pooling" {
-    const std = @import("std");
 
     // Gemma models output pre-pooled sentence_embedding
     try std.testing.expect(Model.embedding_gemma_300m.getConfig().output_is_pooled);
@@ -584,7 +679,6 @@ test "Pre-pooled vs requires pooling" {
 }
 
 test "Query prefix behavior" {
-    const std = @import("std");
 
     // Asymmetric models with query prefix
     try std.testing.expect(Model.bge_small_en_v1_5.getConfig().query_prefix != null);
@@ -599,7 +693,6 @@ test "Query prefix behavior" {
 }
 
 test "Passage prefix behavior" {
-    const std = @import("std");
 
     // Models with passage prefix
     try std.testing.expect(Model.multilingual_e5_large.getConfig().passage_prefix != null);
@@ -614,8 +707,6 @@ test "Passage prefix behavior" {
 }
 
 test "ModelFiles constants" {
-    const std = @import("std");
-
     try std.testing.expectEqualStrings("model.onnx", ModelFiles.model_onnx);
     try std.testing.expectEqualStrings("tokenizer.json", ModelFiles.tokenizer_json);
     try std.testing.expectEqualStrings("config.json", ModelFiles.config_json);
@@ -623,13 +714,11 @@ test "ModelFiles constants" {
 }
 
 test "getHfUrl returns empty for now" {
-    const std = @import("std");
     const url = getHfUrl("BAAI/bge-small-en-v1.5", "model.onnx");
     try std.testing.expectEqual(@as(usize, 0), url.len);
 }
 
 test "Gemma variants share same HF repo" {
-    const std = @import("std");
     const base = Model.embedding_gemma_300m.getConfig().hf_repo;
     const q4 = Model.embedding_gemma_300m_q4.getConfig().hf_repo;
     const q4f16 = Model.embedding_gemma_300m_q4f16.getConfig().hf_repo;
@@ -641,7 +730,6 @@ test "Gemma variants share same HF repo" {
 }
 
 test "Granite variants share same HF repo" {
-    const std = @import("std");
     const quantized = Model.granite_embedding_english_r2.getConfig().hf_repo;
     const fp16 = Model.granite_embedding_english_r2_fp16.getConfig().hf_repo;
 
@@ -649,7 +737,6 @@ test "Granite variants share same HF repo" {
 }
 
 test "Output names for pooled models" {
-    const std = @import("std");
 
     // Gemma models use "sentence_embedding" output
     try std.testing.expectEqualStrings("sentence_embedding", Model.embedding_gemma_300m.getConfig().output_name.?);

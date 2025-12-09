@@ -142,6 +142,16 @@ pub const Tokenizer = struct {
         return result;
     }
 
+    /// Get the number of tokens in the given text without allocating
+    /// Returns 0 on tokenization error
+    pub fn tokenCount(self: *Self, text: []const u8, add_special_tokens: bool) usize {
+        var encoding = self.inner.encode(text, add_special_tokens) catch {
+            return 0;
+        };
+        defer encoding.deinit();
+        return encoding.ids.len;
+    }
+
     /// Get vocabulary size
     pub fn getVocabSize(self: *const Self) usize {
         return @constCast(&self.inner).getVocabSize();

@@ -50,6 +50,8 @@ pub const CoreMLComputeUnits = embedding.CoreMLComputeUnits;
 pub const models = @import("models.zig");
 pub const Model = models.Model;
 pub const ModelConfig = models.ModelConfig;
+pub const MemoryProfile = models.MemoryProfile;
+pub const getAvailableMemoryMB = models.getAvailableMemoryMB;
 
 // Pooling strategies
 pub const pooling = @import("pooling.zig");

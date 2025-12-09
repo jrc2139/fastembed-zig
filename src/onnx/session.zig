@@ -74,6 +74,10 @@ pub const Session = struct {
     pub const InitOptions = struct {
         /// Execution provider to use (default: CPU)
         execution_provider: ExecutionProvider = .{ .cpu = {} },
+        /// Number of threads for intra-op parallelism (0 = use all cores)
+        intra_op_num_threads: u32 = 0,
+        /// Number of threads for inter-op parallelism (0 = use all cores)
+        inter_op_num_threads: u32 = 0,
     };
 
     /// Load a model from file with default options (CPU provider)
@@ -115,6 +119,22 @@ pub const Session = struct {
         status = api.SetSessionGraphOptimizationLevel.?(opts.?, opt_level);
         if (status != null) {
             api.ReleaseStatus.?(status);
+        }
+
+        // Set thread counts for CPU parallelism
+        // intra_op: threads for parallel ops within a single node
+        // inter_op: threads for parallel execution of independent nodes
+        if (options.intra_op_num_threads > 0) {
+            status = api.SetIntraOpNumThreads.?(opts.?, @intCast(options.intra_op_num_threads));
+            if (status != null) {
+                api.ReleaseStatus.?(status);
+            }
+        }
+        if (options.inter_op_num_threads > 0) {
+            status = api.SetInterOpNumThreads.?(opts.?, @intCast(options.inter_op_num_threads));
+            if (status != null) {
+                api.ReleaseStatus.?(status);
+            }
         }
 
         // Create session

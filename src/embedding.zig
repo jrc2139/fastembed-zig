@@ -35,6 +35,10 @@ pub const EmbedderOptions = struct {
     normalize: ?bool = null,
     /// Execution provider (default: CPU)
     execution_provider: ExecutionProvider = .{ .cpu = {} },
+    /// Number of threads for intra-op parallelism (0 = ONNX default, uses all cores)
+    intra_op_num_threads: u32 = 0,
+    /// Number of threads for inter-op parallelism (0 = ONNX default)
+    inter_op_num_threads: u32 = 0,
 };
 
 /// Text embedder using transformer models
@@ -87,9 +91,11 @@ pub const Embedder = struct {
         defer allocator.free(model_onnx_path_z);
         @memcpy(model_onnx_path_z, model_onnx_path);
 
-        // Load ONNX model with configured execution provider
+        // Load ONNX model with configured execution provider and thread options
         var session = onnx.Session.initWithOptions(env, model_onnx_path_z, allocator, .{
             .execution_provider = options.execution_provider,
+            .intra_op_num_threads = options.intra_op_num_threads,
+            .inter_op_num_threads = options.inter_op_num_threads,
         }) catch {
             return EmbedderError.ModelError;
         };
@@ -117,6 +123,12 @@ pub const Embedder = struct {
         tok.deinit();
     }
 
+    /// Get the token count for a text without generating embeddings
+    /// Uses the tokenizer's efficient tokenCount method
+    pub fn getTokenCount(self: *Self, text: []const u8) usize {
+        return self.tokenizer.tokenCount(text, true);
+    }
+
     /// Generate embeddings for a list of texts
     ///
     /// Automatically splits into optimal batch sizes based on model memory profile.
@@ -126,9 +138,9 @@ pub const Embedder = struct {
             return &[_]f32{};
         }
 
-        // Get optimal batch size from model memory profile
+        // Get optimal batch size from model memory profile with auto memory detection
         // Use CPU batch size (TODO: detect GPU and use optimal_gpu_batch)
-        const optimal_batch = self.config.memory_profile.getDefaultBatch(false);
+        const optimal_batch = self.config.memory_profile.getAutoBatch(false);
         const batch_size: usize = @min(texts.len, optimal_batch);
 
         // If input fits in a single batch, process directly
