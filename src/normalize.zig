@@ -187,10 +187,10 @@ test "L2 normalize - high dimensional vector" {
 
 test "L2 normalize batch - mixed vectors" {
     var vecs = [_]f32{
-        3.0,  4.0,  // vec 0: norm = 5
-        0.0,  0.0,  // vec 1: zero vector
-        -3.0, 4.0,  // vec 2: with negatives
-        1.0,  0.0,  // vec 3: already unit length
+        3.0, 4.0, // vec 0: norm = 5
+        0.0, 0.0, // vec 1: zero vector
+        -3.0, 4.0, // vec 2: with negatives
+        1.0, 0.0, // vec 3: already unit length
     };
     l2NormalizeBatch(&vecs, 4, 2);
 

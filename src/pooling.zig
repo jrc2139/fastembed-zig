@@ -152,9 +152,9 @@ test "CLS pooling - multiple batches" {
     // [2, 3, 4] - 2 batches, 3 tokens, 4 dims
     const hidden_states = [_]f32{
         // Batch 0
-        1.0,  2.0,  3.0,  4.0, // CLS token
-        5.0,  6.0,  7.0,  8.0, // Token 1
-        9.0,  10.0, 11.0, 12.0, // Token 2
+        1.0, 2.0, 3.0, 4.0, // CLS token
+        5.0, 6.0, 7.0, 8.0, // Token 1
+        9.0, 10.0, 11.0, 12.0, // Token 2
         // Batch 1
         13.0, 14.0, 15.0, 16.0, // CLS token
         17.0, 18.0, 19.0, 20.0, // Token 1
@@ -250,7 +250,7 @@ test "Mean pooling - multiple batches different mask lengths" {
         1.0, 2.0,
         3.0, 4.0,
         5.0, 6.0,
-        7.0, 8.0, // padding
+        7.0,  8.0, // padding
         // Batch 1: 2 valid tokens
         10.0, 20.0,
         30.0, 40.0,
