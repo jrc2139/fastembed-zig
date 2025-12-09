@@ -32,6 +32,8 @@ pub const Model = enum {
     granite_embedding_small_english_r2,
     /// IBM Granite Embedding Small English R2 Q4 quantized (384 dimensions) - fastest
     granite_embedding_small_english_r2_q4,
+    /// IBM Granite Embedding Small English R2 QINT8 ARM64 (384 dimensions) - optimized for Apple Silicon
+    granite_embedding_small_english_r2_qint8,
 
     /// Get model configuration
     pub fn getConfig(self: Model) ModelConfig {
@@ -226,6 +228,22 @@ pub const Model = enum {
                 .output_is_pooled = false,
                 .output_name = null,
                 // Q4 quantized - smallest and fastest
+                .memory_profile = .{ .base_memory_mb = 100, .per_batch_item_mb = 5.0, .optimal_cpu_batch = 64, .optimal_gpu_batch = 128 },
+            },
+            .granite_embedding_small_english_r2_qint8 => .{
+                .name = "granite-embedding-small-english-r2-qint8",
+                .hf_repo = "jrc2139/granite-embedding-small-english-r2-ONNX",
+                .hidden_dim = 384,
+                .max_seq_len = 8192,
+                .pooling = .mean,
+                .normalize = true,
+                .query_prefix = null,
+                .passage_prefix = null,
+                .use_token_type_ids = false,
+                .model_file = "onnx/model_qint8_arm64.onnx",
+                .output_is_pooled = false,
+                .output_name = null,
+                // QINT8 ARM64 - optimized for Apple Silicon, single file (no external data)
                 .memory_profile = .{ .base_memory_mb = 100, .per_batch_item_mb = 5.0, .optimal_cpu_batch = 64, .optimal_gpu_batch = 128 },
             },
         };
@@ -573,9 +591,9 @@ test "All models have valid configs" {
 
 test "Model enum iteration" {
 
-    // Verify we have exactly 10 models
+    // Verify we have exactly 13 models
     const model_count = @typeInfo(Model).@"enum".fields.len;
-    try std.testing.expectEqual(@as(usize, 10), model_count);
+    try std.testing.expectEqual(@as(usize, 13), model_count);
 }
 
 test "Pooling strategy distribution" {
