@@ -110,6 +110,11 @@ pub const ExecutionProvider = union(enum) {
                 // CPU is the default, nothing to configure
             },
             .coreml => |coreml_opts| {
+                // CoreML is only available when coreml_enabled is true at compile time
+                if (comptime !c_api.coreml_enabled) {
+                    return error.ProviderNotAvailable;
+                }
+
                 // Build CoreML flags
                 var flags: u32 = 0;
 
@@ -158,11 +163,13 @@ pub const ExecutionProvider = union(enum) {
 
         // Platform-specific auto-detection
         if (comptime builtin.os.tag == .macos) {
-            // On macOS, use CoreML with safe defaults
-            return ExecutionProvider.coremlProvider();
+            // On macOS, use CoreML if enabled at compile time
+            if (comptime c_api.coreml_enabled) {
+                return ExecutionProvider.coremlProvider();
+            }
         }
 
-        // On other platforms, fall back to CPU
+        // On other platforms or when CoreML is disabled, fall back to CPU
         // TODO: Add CUDA detection for Linux
         return ExecutionProvider.cpuProvider();
     }
@@ -185,5 +192,184 @@ test "auto resolve on macos" {
     if (comptime builtin.os.tag == .macos) {
         const resolved = ExecutionProvider.autoProvider().resolve();
         try std.testing.expect(resolved == .coreml);
+    }
+}
+
+// =============================================================================
+// COMPREHENSIVE TESTS
+// =============================================================================
+
+test "CoreMLComputeUnits enum completeness" {
+    const units = [_]CoreMLComputeUnits{
+        .all,
+        .cpu_only,
+        .cpu_and_gpu,
+        .cpu_and_neural_engine,
+    };
+    try std.testing.expectEqual(@as(usize, 4), units.len);
+}
+
+test "CoreMLModelFormat enum" {
+    const formats = [_]CoreMLModelFormat{
+        .neural_network,
+        .ml_program,
+    };
+    try std.testing.expectEqual(@as(usize, 2), formats.len);
+}
+
+test "CoreMLOptions defaults" {
+    const opts = CoreMLOptions{};
+    try std.testing.expectEqual(CoreMLModelFormat.ml_program, opts.model_format);
+    try std.testing.expectEqual(CoreMLComputeUnits.cpu_and_neural_engine, opts.compute_units);
+    try std.testing.expectEqual(false, opts.allow_low_precision_accumulation_on_gpu);
+    try std.testing.expectEqual(false, opts.require_static_input_shapes);
+}
+
+test "CoreMLOptions custom values" {
+    const opts = CoreMLOptions{
+        .model_format = .neural_network,
+        .compute_units = .all,
+        .allow_low_precision_accumulation_on_gpu = true,
+        .require_static_input_shapes = true,
+    };
+    try std.testing.expectEqual(CoreMLModelFormat.neural_network, opts.model_format);
+    try std.testing.expectEqual(CoreMLComputeUnits.all, opts.compute_units);
+    try std.testing.expectEqual(true, opts.allow_low_precision_accumulation_on_gpu);
+    try std.testing.expectEqual(true, opts.require_static_input_shapes);
+}
+
+test "ExecutionProvider union types" {
+    // CPU
+    const cpu = ExecutionProvider{ .cpu = {} };
+    try std.testing.expect(cpu == .cpu);
+
+    // CoreML
+    const coreml = ExecutionProvider{ .coreml = .{} };
+    try std.testing.expect(coreml == .coreml);
+
+    // CUDA
+    const cuda = ExecutionProvider{ .cuda = .{ .device_id = 0 } };
+    try std.testing.expect(cuda == .cuda);
+
+    // Auto
+    const auto_prov = ExecutionProvider{ .auto = {} };
+    try std.testing.expect(auto_prov == .auto);
+}
+
+test "ExecutionProvider factory methods" {
+    // cpuProvider
+    const cpu = ExecutionProvider.cpuProvider();
+    try std.testing.expect(cpu == .cpu);
+
+    // coremlProvider
+    const coreml = ExecutionProvider.coremlProvider();
+    try std.testing.expect(coreml == .coreml);
+
+    // coremlSafe
+    const coreml_safe = ExecutionProvider.coremlSafe();
+    try std.testing.expect(coreml_safe == .coreml);
+    try std.testing.expectEqual(CoreMLComputeUnits.cpu_only, coreml_safe.coreml.compute_units);
+
+    // coremlPerformance
+    const coreml_perf = ExecutionProvider.coremlPerformance();
+    try std.testing.expect(coreml_perf == .coreml);
+    try std.testing.expectEqual(CoreMLComputeUnits.all, coreml_perf.coreml.compute_units);
+
+    // cudaProvider
+    const cuda = ExecutionProvider.cudaProvider(1);
+    try std.testing.expect(cuda == .cuda);
+    try std.testing.expectEqual(@as(u32, 1), cuda.cuda.device_id);
+
+    // autoProvider
+    const auto_prov = ExecutionProvider.autoProvider();
+    try std.testing.expect(auto_prov == .auto);
+}
+
+test "coremlWithOptions" {
+    const opts = CoreMLOptions{
+        .compute_units = .cpu_and_gpu,
+        .model_format = .neural_network,
+    };
+    const provider = ExecutionProvider.coremlWithOptions(opts);
+    try std.testing.expect(provider == .coreml);
+    try std.testing.expectEqual(CoreMLComputeUnits.cpu_and_gpu, provider.coreml.compute_units);
+    try std.testing.expectEqual(CoreMLModelFormat.neural_network, provider.coreml.model_format);
+}
+
+test "getName for all providers" {
+    try std.testing.expectEqualStrings("CPU", ExecutionProvider.cpuProvider().getName());
+    try std.testing.expectEqualStrings("CUDA", ExecutionProvider.cudaProvider(0).getName());
+    try std.testing.expectEqualStrings("Auto", ExecutionProvider.autoProvider().getName());
+}
+
+test "getName for CoreML compute units" {
+    // All compute units
+    const all = ExecutionProvider{ .coreml = .{ .compute_units = .all } };
+    try std.testing.expectEqualStrings("CoreML:All", all.getName());
+
+    // CPU only
+    const cpu_only = ExecutionProvider{ .coreml = .{ .compute_units = .cpu_only } };
+    try std.testing.expectEqualStrings("CoreML:CPUOnly", cpu_only.getName());
+
+    // CPU + GPU
+    const cpu_gpu = ExecutionProvider{ .coreml = .{ .compute_units = .cpu_and_gpu } };
+    try std.testing.expectEqualStrings("CoreML:CPU+GPU", cpu_gpu.getName());
+
+    // CPU + ANE
+    const cpu_ane = ExecutionProvider{ .coreml = .{ .compute_units = .cpu_and_neural_engine } };
+    try std.testing.expectEqualStrings("CoreML:CPU+ANE", cpu_ane.getName());
+}
+
+test "resolve non-auto returns self" {
+    const cpu = ExecutionProvider.cpuProvider();
+    try std.testing.expectEqual(cpu, cpu.resolve());
+
+    const coreml = ExecutionProvider.coremlProvider();
+    try std.testing.expectEqual(coreml, coreml.resolve());
+
+    const cuda = ExecutionProvider.cudaProvider(0);
+    try std.testing.expectEqual(cuda, cuda.resolve());
+}
+
+test "resolve auto returns platform-specific provider" {
+    const auto_prov = ExecutionProvider.autoProvider();
+    const resolved = auto_prov.resolve();
+
+    // On macOS, should resolve to CoreML
+    if (comptime builtin.os.tag == .macos) {
+        try std.testing.expect(resolved == .coreml);
+    } else {
+        // On other platforms, should resolve to CPU
+        try std.testing.expect(resolved == .cpu);
+    }
+}
+
+test "ProviderError enum" {
+    const errors = [_]ProviderError{
+        ProviderError.ApiNotAvailable,
+        ProviderError.ProviderConfigurationFailed,
+        ProviderError.ProviderNotAvailable,
+    };
+    try std.testing.expectEqual(@as(usize, 3), errors.len);
+}
+
+test "ExecutionProvider struct size" {
+    const size = @sizeOf(ExecutionProvider);
+    try std.testing.expect(size > 0);
+    // Union should be compact
+    try std.testing.expect(size < 64);
+}
+
+test "CoreMLOptions struct size" {
+    const size = @sizeOf(CoreMLOptions);
+    try std.testing.expect(size > 0);
+    // Options should be compact
+    try std.testing.expect(size < 32);
+}
+
+test "CUDA provider with different device IDs" {
+    for (0..4) |i| {
+        const cuda = ExecutionProvider.cudaProvider(@intCast(i));
+        try std.testing.expectEqual(@as(u32, @intCast(i)), cuda.cuda.device_id);
     }
 }

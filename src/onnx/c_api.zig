@@ -1,10 +1,19 @@
 //! Raw C bindings for ONNX Runtime C API
 //!
 //! This module provides direct access to the ONNX Runtime C API via @cImport.
+//! CoreML support is optional and controlled by the coreml_enabled build option.
+
+const builtin = @import("builtin");
+const build_options = @import("build_options");
+
+/// Whether CoreML is enabled (controlled by build.zig)
+pub const coreml_enabled = build_options.coreml_enabled;
 
 pub const c = @cImport({
     @cInclude("onnxruntime_c_api.h");
-    @cInclude("coreml_provider_factory.h");
+    if (coreml_enabled) {
+        @cInclude("coreml_provider_factory.h");
+    }
 });
 
 // Re-export commonly used types

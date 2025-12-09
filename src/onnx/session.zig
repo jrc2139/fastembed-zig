@@ -94,12 +94,6 @@ pub const Session = struct {
         }
         defer api.ReleaseSessionOptions.?(opts.?);
 
-        // Set graph optimization level
-        status = api.SetSessionGraphOptimizationLevel.?(opts.?, 99); // ORT_ENABLE_ALL
-        if (status != null) {
-            api.ReleaseStatus.?(status);
-        }
-
         // Configure execution provider
         const exec_provider = options.execution_provider.resolve();
         exec_provider.apply(opts.?) catch |err| {
@@ -107,6 +101,21 @@ pub const Session = struct {
             std.log.warn("Failed to configure {s} provider: {}, falling back to CPU", .{ options.execution_provider.getName(), err });
         };
         std.log.info("Using {s} execution provider", .{exec_provider.getName()});
+
+        // Set graph optimization level
+        // For CoreML, we must disable graph optimization to avoid errors with
+        // initializer handling during graph partitioning. Without this, models
+        // like Granite fail with "model_path must not be empty" during session
+        // creation. The issue is that ONNX RT's optimizer modifies the graph in
+        // ways that confuse the CoreML provider's partitioning logic.
+        const opt_level: c_uint = switch (exec_provider) {
+            .coreml => 0, // ORT_DISABLE_ALL - required for CoreML compatibility
+            else => 99, // ORT_ENABLE_ALL for maximum CPU performance
+        };
+        status = api.SetSessionGraphOptimizationLevel.?(opts.?, opt_level);
+        if (status != null) {
+            api.ReleaseStatus.?(status);
+        }
 
         // Create session
         var session: ?*c_api.OrtSession = null;
@@ -348,4 +357,111 @@ pub const Session = struct {
 test "Environment creation" {
     var env = try Environment.init();
     defer env.deinit();
+}
+
+// =============================================================================
+// COMPREHENSIVE TESTS
+// =============================================================================
+
+test "OnnxError enum completeness" {
+    const errors = [_]OnnxError{
+        OnnxError.ApiNotAvailable,
+        OnnxError.EnvironmentCreationFailed,
+        OnnxError.SessionCreationFailed,
+        OnnxError.SessionOptionsCreationFailed,
+        OnnxError.TensorCreationFailed,
+        OnnxError.InferenceFailed,
+        OnnxError.InvalidShape,
+        OnnxError.AllocatorError,
+        OnnxError.OutOfMemory,
+        OnnxError.ProviderConfigurationFailed,
+        OnnxError.ProviderNotAvailable,
+    };
+
+    try std.testing.expectEqual(@as(usize, 11), errors.len);
+}
+
+test "Environment struct size" {
+    const size = @sizeOf(Environment);
+    try std.testing.expect(size > 0);
+    try std.testing.expect(size < 1024); // Should be small (just pointers)
+}
+
+test "Environment has expected fields" {
+    try std.testing.expect(@hasField(Environment, "ptr"));
+    try std.testing.expect(@hasField(Environment, "api"));
+}
+
+test "Session struct has expected fields" {
+    try std.testing.expect(@hasField(Session, "ptr"));
+    try std.testing.expect(@hasField(Session, "api"));
+    try std.testing.expect(@hasField(Session, "allocator"));
+    try std.testing.expect(@hasField(Session, "input_names"));
+    try std.testing.expect(@hasField(Session, "output_names"));
+    try std.testing.expect(@hasField(Session, "zig_allocator"));
+    try std.testing.expect(@hasField(Session, "execution_provider"));
+}
+
+test "Session.InitOptions default values" {
+    const opts = Session.InitOptions{};
+    try std.testing.expectEqual(ExecutionProvider{ .cpu = {} }, opts.execution_provider);
+}
+
+test "Session.InitOptions with CoreML" {
+    const opts = Session.InitOptions{
+        .execution_provider = .{ .coreml = .{} },
+    };
+    _ = opts;
+    try std.testing.expect(true);
+}
+
+test "Session.InitOptions with CoreML custom options" {
+    const opts = Session.InitOptions{
+        .execution_provider = .{
+            .coreml = .{
+                .compute_units = .cpu_and_neural_engine,
+                .require_static_input_shapes = true,
+            },
+        },
+    };
+    _ = opts;
+    try std.testing.expect(true);
+}
+
+test "ExecutionProvider re-export" {
+    // Verify re-exported types are accessible
+    _ = ExecutionProvider{ .cpu = {} };
+    _ = ExecutionProvider{ .coreml = .{} };
+    try std.testing.expect(true);
+}
+
+test "CoreMLOptions re-export" {
+    const opts = CoreMLOptions{
+        .compute_units = .all,
+    };
+    _ = opts;
+    try std.testing.expect(true);
+}
+
+test "CoreMLComputeUnits re-export" {
+    _ = CoreMLComputeUnits.all;
+    _ = CoreMLComputeUnits.cpu_only;
+    _ = CoreMLComputeUnits.cpu_and_gpu;
+    _ = CoreMLComputeUnits.cpu_and_neural_engine;
+    try std.testing.expect(true);
+}
+
+test "Environment init and deinit multiple times" {
+    // Test that we can create and destroy multiple environments
+    for (0..3) |_| {
+        var env = try Environment.init();
+        env.deinit();
+    }
+}
+
+test "Session struct size is reasonable" {
+    const size = @sizeOf(Session);
+    try std.testing.expect(size > 0);
+    // Session should be reasonable size (contains ArrayLists, allocator, etc.)
+    try std.testing.expect(size < 4096);
 }

@@ -81,7 +81,7 @@ pub fn main() !void {
         "The development of large language models has revolutionized how we approach tasks like text classification, semantic search, question answering systems, and document summarization.",
     };
 
-    std.debug.print("Throughput Benchmark (3 iterations each, warmup first):\n", .{});
+    std.debug.print("Benchmark (3 iterations each, warmup first):\n", .{});
     std.debug.print("-----------------------------------------------------------\n", .{});
 
     // Test different batch sizes to compare with fastembed-go

@@ -25,8 +25,8 @@ pub const CoreMLComputeUnits = onnx.CoreMLComputeUnits;
 
 /// Options for creating an Embedder
 pub const EmbedderOptions = struct {
-    /// Model to use (default: BGE small English)
-    model: models.Model = .bge_small_en_v1_5,
+    /// Model to use (default: Granite Embedding English R2 Q4)
+    model: models.Model = .granite_embedding_english_r2,
     /// Path to model directory (if using local model)
     model_path: ?[]const u8 = null,
     /// Maximum sequence length (0 = use model default)
@@ -150,8 +150,10 @@ pub const Embedder = struct {
             seq_lengths[i] = seq_len;
             actual_seq_len = @max(actual_seq_len, seq_len);
 
-            // Store tokens - capacity already ensured, use appendAssumeCapacity or append
-            all_tokens.appendSlice(self.allocator, tokens[0..seq_len]) catch return EmbedderError.OutOfMemory;
+            // Store tokens - capacity already ensured, append with i32->i64 conversion
+            for (tokens[0..seq_len]) |tok| {
+                all_tokens.appendAssumeCapacity(@as(i64, tok));
+            }
         }
 
         // Pad all sequences to same length
@@ -163,7 +165,7 @@ pub const Embedder = struct {
         defer self.allocator.free(attention_mask);
 
         // Phase 1.4: Only allocate token_type_ids if model uses them
-        var token_type_ids: ?[]i64 = if (self.config.use_token_type_ids) blk: {
+        const token_type_ids: ?[]i64 = if (self.config.use_token_type_ids) blk: {
             const ids = self.allocator.alloc(i64, batch_size * padded_len) catch return EmbedderError.OutOfMemory;
             @memset(ids, 0); // token_type_ids are always 0 for single-sequence
             break :blk ids;
@@ -264,4 +266,174 @@ pub const Embedder = struct {
 
 test "Embedder struct compiles" {
     try std.testing.expect(@sizeOf(Embedder) > 0);
+}
+
+// =============================================================================
+// COMPREHENSIVE TESTS
+// =============================================================================
+
+test "EmbedderError enum" {
+    // Test that all error types exist
+    const errors = [_]EmbedderError{
+        EmbedderError.TokenizerError,
+        EmbedderError.ModelError,
+        EmbedderError.InferenceError,
+        EmbedderError.InvalidInput,
+        EmbedderError.OutOfMemory,
+    };
+
+    try std.testing.expectEqual(@as(usize, 5), errors.len);
+}
+
+test "EmbedderOptions default values" {
+    const opts = EmbedderOptions{};
+
+    try std.testing.expectEqual(models.Model.granite_embedding_english_r2, opts.model);
+    try std.testing.expect(opts.model_path == null);
+    try std.testing.expectEqual(@as(usize, 0), opts.max_seq_len);
+    try std.testing.expect(opts.normalize == null);
+    try std.testing.expectEqual(ExecutionProvider{ .cpu = {} }, opts.execution_provider);
+}
+
+test "EmbedderOptions with custom values" {
+    const opts = EmbedderOptions{
+        .model = .bge_small_en_v1_5,
+        .model_path = "/some/path",
+        .max_seq_len = 128,
+        .normalize = false,
+        .execution_provider = .{ .cpu = {} },
+    };
+
+    try std.testing.expectEqual(models.Model.bge_small_en_v1_5, opts.model);
+    try std.testing.expectEqualStrings("/some/path", opts.model_path.?);
+    try std.testing.expectEqual(@as(usize, 128), opts.max_seq_len);
+    try std.testing.expectEqual(false, opts.normalize.?);
+}
+
+test "EmbedderOptions with all model types" {
+    const model_types = [_]models.Model{
+        .bge_small_en_v1_5,
+        .all_minilm_l6_v2,
+        .multilingual_e5_large,
+        .bge_small_zh_v1_5,
+        .embedding_gemma_300m,
+        .embedding_gemma_300m_q4,
+        .embedding_gemma_300m_q4f16,
+        .embedding_gemma_300m_fp16,
+        .granite_embedding_english_r2,
+        .granite_embedding_english_r2_fp16,
+    };
+
+    for (model_types) |model| {
+        const opts = EmbedderOptions{
+            .model = model,
+        };
+        try std.testing.expectEqual(model, opts.model);
+    }
+}
+
+test "ExecutionProvider CPU type" {
+    const provider = ExecutionProvider{ .cpu = {} };
+    _ = provider;
+    // Just ensure it compiles and is valid
+    try std.testing.expect(true);
+}
+
+test "ExecutionProvider CoreML type with default options" {
+    const provider = ExecutionProvider{ .coreml = .{} };
+    _ = provider;
+    try std.testing.expect(true);
+}
+
+test "ExecutionProvider CoreML type with custom options" {
+    const provider = ExecutionProvider{
+        .coreml = .{
+            .compute_units = .cpu_and_neural_engine,
+            .require_static_input_shapes = true,
+        },
+    };
+    _ = provider;
+    try std.testing.expect(true);
+}
+
+test "CoreMLComputeUnits variants" {
+    const cpu_only = CoreMLComputeUnits.cpu_only;
+    const cpu_and_gpu = CoreMLComputeUnits.cpu_and_gpu;
+    const all = CoreMLComputeUnits.all;
+    const cpu_and_neural_engine = CoreMLComputeUnits.cpu_and_neural_engine;
+
+    try std.testing.expect(cpu_only != cpu_and_gpu);
+    try std.testing.expect(cpu_and_gpu != all);
+    try std.testing.expect(all != cpu_and_neural_engine);
+}
+
+test "CoreMLOptions default values" {
+    const opts = CoreMLOptions{};
+
+    try std.testing.expectEqual(CoreMLComputeUnits.cpu_and_neural_engine, opts.compute_units);
+    try std.testing.expectEqual(false, opts.require_static_input_shapes);
+}
+
+test "CoreMLOptions custom values" {
+    const opts = CoreMLOptions{
+        .compute_units = .cpu_and_neural_engine,
+        .require_static_input_shapes = true,
+    };
+
+    try std.testing.expectEqual(CoreMLComputeUnits.cpu_and_neural_engine, opts.compute_units);
+    try std.testing.expectEqual(true, opts.require_static_input_shapes);
+}
+
+test "EmbedderOptions max_seq_len override" {
+    // Test that max_seq_len = 0 means "use model default"
+    const opts_default = EmbedderOptions{
+        .model = .bge_small_en_v1_5, // default is 512
+        .max_seq_len = 0,
+    };
+    try std.testing.expectEqual(@as(usize, 0), opts_default.max_seq_len);
+
+    // Custom override
+    const opts_custom = EmbedderOptions{
+        .model = .bge_small_en_v1_5,
+        .max_seq_len = 256,
+    };
+    try std.testing.expectEqual(@as(usize, 256), opts_custom.max_seq_len);
+}
+
+test "EmbedderOptions normalize override" {
+    // null means use model default
+    const opts_default = EmbedderOptions{
+        .normalize = null,
+    };
+    try std.testing.expect(opts_default.normalize == null);
+
+    // Explicit true
+    const opts_true = EmbedderOptions{
+        .normalize = true,
+    };
+    try std.testing.expectEqual(true, opts_true.normalize.?);
+
+    // Explicit false (override model's normalize=true)
+    const opts_false = EmbedderOptions{
+        .normalize = false,
+    };
+    try std.testing.expectEqual(false, opts_false.normalize.?);
+}
+
+test "Embedder struct size is reasonable" {
+    // Embedder should be a reasonable size (not bloated)
+    const size = @sizeOf(Embedder);
+    try std.testing.expect(size > 0);
+    try std.testing.expect(size < 4096); // Should not be massive
+}
+
+test "Embedder has expected fields" {
+    // Use @hasField to verify structure
+    try std.testing.expect(@hasField(Embedder, "allocator"));
+    try std.testing.expect(@hasField(Embedder, "tokenizer"));
+    try std.testing.expect(@hasField(Embedder, "session"));
+    try std.testing.expect(@hasField(Embedder, "env"));
+    try std.testing.expect(@hasField(Embedder, "config"));
+    try std.testing.expect(@hasField(Embedder, "max_seq_len"));
+    try std.testing.expect(@hasField(Embedder, "do_normalize"));
 }

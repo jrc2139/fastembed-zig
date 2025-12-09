@@ -7,6 +7,14 @@ pub fn build(b: *std.Build) void {
     // Build option for static linking
     const use_static = b.option(bool, "static", "Link against static ONNX Runtime libraries") orelse false;
 
+    // Build option for CoreML support (default: true for dynamic, false for static on macOS)
+    const default_coreml = !use_static;
+    const coreml_enabled = b.option(bool, "coreml", "Enable CoreML execution provider (macOS only)") orelse default_coreml;
+
+    // Create build options module
+    const build_options = b.addOptions();
+    build_options.addOption(bool, "coreml_enabled", coreml_enabled);
+
     // -------------------------------------------------------------------------
     // Dependencies
     // -------------------------------------------------------------------------
@@ -32,40 +40,50 @@ pub fn build(b: *std.Build) void {
     // -------------------------------------------------------------------------
     // Helper to configure a module with ONNX Runtime dependencies
     // -------------------------------------------------------------------------
-    const configureOrt = struct {
-        fn configure(
-            module: *std.Build.Module,
-            tgt: std.Build.ResolvedTarget,
-            o_include: std.Build.LazyPath,
-            o_lib: std.Build.LazyPath,
-            static: bool,
-        ) void {
-            // ONNX Runtime
-            module.addIncludePath(o_include);
-            module.addLibraryPath(o_lib);
+    const ConfigureOrtContext = struct {
+        tgt: std.Build.ResolvedTarget,
+        o_include: std.Build.LazyPath,
+        o_lib: std.Build.LazyPath,
+        static: bool,
+        coreml: bool,
 
-            if (static) {
+        fn configure(ctx: @This(), module: *std.Build.Module) void {
+            // ONNX Runtime
+            module.addIncludePath(ctx.o_include);
+            module.addLibraryPath(ctx.o_lib);
+
+            if (ctx.static) {
                 // Link the combined static library
                 module.linkSystemLibrary("onnxruntime_all", .{ .preferred_link_mode = .static });
                 // Link C++ standard library
-                if (tgt.result.os.tag == .macos) {
+                if (ctx.tgt.result.os.tag == .macos) {
                     module.linkSystemLibrary("c++", .{});
                 } else {
                     module.linkSystemLibrary("stdc++", .{ .preferred_link_mode = .static });
                 }
             } else {
                 module.linkSystemLibrary("onnxruntime", .{});
-                module.addRPath(o_lib);
+                module.addRPath(ctx.o_lib);
             }
 
             // System dependencies
             module.link_libc = true;
-            if (tgt.result.os.tag == .macos) {
+            if (ctx.tgt.result.os.tag == .macos) {
                 module.linkFramework("Foundation", .{});
-                module.linkFramework("CoreML", .{});
+                // Only link CoreML if enabled
+                if (ctx.coreml) {
+                    module.linkFramework("CoreML", .{});
+                }
             }
         }
-    }.configure;
+    };
+    const ort_config = ConfigureOrtContext{
+        .tgt = target,
+        .o_include = ort_include,
+        .o_lib = ort_lib,
+        .static = use_static,
+        .coreml = coreml_enabled,
+    };
 
     // -------------------------------------------------------------------------
     // Library Module
@@ -76,9 +94,10 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
         .imports = &.{
             .{ .name = "tokenizer", .module = tokenizer_mod },
+            .{ .name = "build_options", .module = build_options.createModule() },
         },
     });
-    configureOrt(fastembed_mod, target, ort_include, ort_lib, use_static);
+    ort_config.configure(fastembed_mod);
 
     // Export the configured module for other packages
     _ = b.addModule("fastembed", .{
@@ -87,12 +106,13 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
         .imports = &.{
             .{ .name = "tokenizer", .module = tokenizer_mod },
+            .{ .name = "build_options", .module = build_options.createModule() },
         },
     });
 
     // Also add the dependency paths to the exported module
     const exported_mod = b.modules.get("fastembed").?;
-    configureOrt(exported_mod, target, ort_include, ort_lib, use_static);
+    ort_config.configure(exported_mod);
 
     // -------------------------------------------------------------------------
     // Tests
@@ -104,10 +124,11 @@ pub fn build(b: *std.Build) void {
             .optimize = optimize,
             .imports = &.{
                 .{ .name = "tokenizer", .module = tokenizer_mod },
+                .{ .name = "build_options", .module = build_options.createModule() },
             },
         }),
     });
-    configureOrt(lib_tests.root_module, target, ort_include, ort_lib, use_static);
+    ort_config.configure(lib_tests.root_module);
 
     const run_lib_tests = b.addRunArtifact(lib_tests);
 
@@ -128,7 +149,7 @@ pub fn build(b: *std.Build) void {
             },
         }),
     });
-    configureOrt(tokenize_example.root_module, target, ort_include, ort_lib, use_static);
+    ort_config.configure(tokenize_example.root_module);
     b.installArtifact(tokenize_example);
 
     // -------------------------------------------------------------------------
@@ -145,7 +166,7 @@ pub fn build(b: *std.Build) void {
             },
         }),
     });
-    configureOrt(embed_example.root_module, target, ort_include, ort_lib, use_static);
+    ort_config.configure(embed_example.root_module);
     b.installArtifact(embed_example);
 
     const run_embed = b.addRunArtifact(embed_example);
@@ -172,7 +193,7 @@ pub fn build(b: *std.Build) void {
             },
         }),
     });
-    configureOrt(benchmark_example.root_module, target, ort_include, ort_lib, use_static);
+    ort_config.configure(benchmark_example.root_module);
     b.installArtifact(benchmark_example);
 
     const run_benchmark = b.addRunArtifact(benchmark_example);
@@ -199,7 +220,7 @@ pub fn build(b: *std.Build) void {
             },
         }),
     });
-    configureOrt(test_batch_example.root_module, target, ort_include, ort_lib, use_static);
+    ort_config.configure(test_batch_example.root_module);
     b.installArtifact(test_batch_example);
 
     // -------------------------------------------------------------------------
@@ -212,6 +233,7 @@ pub fn build(b: *std.Build) void {
             .optimize = optimize,
             .imports = &.{
                 .{ .name = "tokenizer", .module = tokenizer_mod },
+                .{ .name = "build_options", .module = build_options.createModule() },
             },
         }),
     });
