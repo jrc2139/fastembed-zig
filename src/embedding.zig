@@ -119,12 +119,47 @@ pub const Embedder = struct {
 
     /// Generate embeddings for a list of texts
     ///
+    /// Automatically splits into optimal batch sizes based on model memory profile.
     /// Returns: [num_texts][hidden_dim] as flattened array
     pub fn embed(self: *Self, texts: []const []const u8) EmbedderError![]f32 {
         if (texts.len == 0) {
             return &[_]f32{};
         }
 
+        // Get optimal batch size from model memory profile
+        // Use CPU batch size (TODO: detect GPU and use optimal_gpu_batch)
+        const optimal_batch = self.config.memory_profile.getDefaultBatch(false);
+        const batch_size: usize = @min(texts.len, optimal_batch);
+
+        // If input fits in a single batch, process directly
+        if (texts.len <= batch_size) {
+            return self.embedBatch(texts);
+        }
+
+        // Split into multiple batches
+        const dim = self.config.hidden_dim;
+        const total_embeddings = self.allocator.alloc(f32, texts.len * dim) catch return EmbedderError.OutOfMemory;
+        errdefer self.allocator.free(total_embeddings);
+
+        var processed: usize = 0;
+        while (processed < texts.len) {
+            const end = @min(processed + batch_size, texts.len);
+            const batch_texts = texts[processed..end];
+
+            const batch_embeddings = try self.embedBatch(batch_texts);
+            defer self.allocator.free(batch_embeddings);
+
+            // Copy batch results into the combined output
+            @memcpy(total_embeddings[processed * dim .. end * dim], batch_embeddings);
+
+            processed = end;
+        }
+
+        return total_embeddings;
+    }
+
+    /// Internal: Generate embeddings for a single batch (no chunking)
+    fn embedBatch(self: *Self, texts: []const []const u8) EmbedderError![]f32 {
         const batch_size = texts.len;
 
         // Tokenize all texts and track per-sequence lengths

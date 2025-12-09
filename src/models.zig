@@ -42,6 +42,8 @@ pub const Model = enum {
                 .use_token_type_ids = true,
                 .model_file = "model.onnx",
                 .output_is_pooled = false,
+                // Small model - low memory, fast
+                .memory_profile = .{ .base_memory_mb = 200, .per_batch_item_mb = 8.0, .optimal_cpu_batch = 64, .optimal_gpu_batch = 128 },
             },
             .all_minilm_l6_v2 => .{
                 .name = "all-MiniLM-L6-v2",
@@ -55,6 +57,8 @@ pub const Model = enum {
                 .use_token_type_ids = true,
                 .model_file = "model.onnx",
                 .output_is_pooled = false,
+                // Very small model - lowest memory
+                .memory_profile = .{ .base_memory_mb = 150, .per_batch_item_mb = 6.0, .optimal_cpu_batch = 64, .optimal_gpu_batch = 128 },
             },
             .multilingual_e5_large => .{
                 .name = "multilingual-e5-large",
@@ -68,6 +72,8 @@ pub const Model = enum {
                 .use_token_type_ids = true,
                 .model_file = "model.onnx",
                 .output_is_pooled = false,
+                // Large model - high memory usage
+                .memory_profile = .{ .base_memory_mb = 1500, .per_batch_item_mb = 40.0, .optimal_cpu_batch = 16, .optimal_gpu_batch = 32 },
             },
             .bge_small_zh_v1_5 => .{
                 .name = "bge-small-zh-v1.5",
@@ -81,6 +87,8 @@ pub const Model = enum {
                 .use_token_type_ids = true,
                 .model_file = "model.onnx",
                 .output_is_pooled = false,
+                // Small model similar to bge-small-en
+                .memory_profile = .{ .base_memory_mb = 200, .per_batch_item_mb = 8.0, .optimal_cpu_batch = 64, .optimal_gpu_batch = 128 },
             },
             .embedding_gemma_300m => .{
                 .name = "embeddinggemma-300m",
@@ -96,6 +104,8 @@ pub const Model = enum {
                 .model_file = "onnx/model.onnx",
                 .output_is_pooled = true,
                 .output_name = "sentence_embedding",
+                // Gemma 300M is memory hungry due to long context
+                .memory_profile = .{ .base_memory_mb = 2000, .per_batch_item_mb = 150.0, .optimal_cpu_batch = 8, .optimal_gpu_batch = 16 },
             },
             .embedding_gemma_300m_q4 => .{
                 .name = "embeddinggemma-300m-q4",
@@ -111,6 +121,8 @@ pub const Model = enum {
                 .model_file = "onnx/model_q4.onnx",
                 .output_is_pooled = true,
                 .output_name = "sentence_embedding",
+                // Q4 quantized uses less memory but still memory hungry
+                .memory_profile = .{ .base_memory_mb = 1000, .per_batch_item_mb = 100.0, .optimal_cpu_batch = 16, .optimal_gpu_batch = 32 },
             },
             .embedding_gemma_300m_q4f16 => .{
                 .name = "embeddinggemma-300m-q4f16",
@@ -126,6 +138,8 @@ pub const Model = enum {
                 .model_file = "onnx/model_q4f16.onnx",
                 .output_is_pooled = true,
                 .output_name = "sentence_embedding",
+                // Q4F16 similar to Q4
+                .memory_profile = .{ .base_memory_mb = 1000, .per_batch_item_mb = 100.0, .optimal_cpu_batch = 16, .optimal_gpu_batch = 32 },
             },
             .embedding_gemma_300m_fp16 => .{
                 .name = "embeddinggemma-300m-fp16",
@@ -141,6 +155,8 @@ pub const Model = enum {
                 .model_file = "onnx/model_fp16.onnx",
                 .output_is_pooled = true,
                 .output_name = "sentence_embedding",
+                // FP16 uses more memory than quantized
+                .memory_profile = .{ .base_memory_mb = 1500, .per_batch_item_mb = 120.0, .optimal_cpu_batch = 8, .optimal_gpu_batch = 16 },
             },
             .granite_embedding_english_r2 => .{
                 .name = "granite-embedding-english-r2",
@@ -155,6 +171,8 @@ pub const Model = enum {
                 .model_file = "onnx/model_quantized.onnx",
                 .output_is_pooled = false, // BERT-style output needs pooling
                 .output_name = null, // Use default output (last_hidden_state)
+                // Granite has very long context (8192) - memory scales with sequence length
+                .memory_profile = .{ .base_memory_mb = 1500, .per_batch_item_mb = 80.0, .optimal_cpu_batch = 8, .optimal_gpu_batch = 16 },
             },
             .granite_embedding_english_r2_fp16 => .{
                 .name = "granite-embedding-english-r2-fp16",
@@ -169,6 +187,8 @@ pub const Model = enum {
                 .model_file = "onnx/model_fp16_embedded.onnx", // Single file, no external data
                 .output_is_pooled = false,
                 .output_name = null,
+                // FP16 uses more memory than quantized
+                .memory_profile = .{ .base_memory_mb = 2000, .per_batch_item_mb = 100.0, .optimal_cpu_batch = 8, .optimal_gpu_batch = 16 },
             },
         };
     }
@@ -200,6 +220,45 @@ pub const ModelConfig = struct {
     output_is_pooled: bool = false,
     /// Name of output tensor to use (null = use first output)
     output_name: ?[]const u8 = null,
+    /// Memory profile for batch size optimization
+    memory_profile: MemoryProfile = .{},
+};
+
+/// Memory profile for calculating optimal batch sizes
+/// Based on empirical measurements from fastembed-go benchmarks
+pub const MemoryProfile = struct {
+    /// Base memory used by model weights (MB)
+    base_memory_mb: u32 = 500,
+    /// Memory per batch item at max sequence length (MB)
+    per_batch_item_mb: f32 = 20.0,
+    /// Optimal batch size for CPU (found via benchmarking)
+    /// Smaller batches with parallelization often outperform large batches
+    optimal_cpu_batch: u32 = 32,
+    /// Optimal batch size for GPU
+    optimal_gpu_batch: u32 = 64,
+
+    /// Calculate optimal batch size given available memory (MB)
+    /// Returns a batch size that fits in memory while being efficient
+    pub fn calculateOptimalBatch(self: MemoryProfile, available_memory_mb: u32, is_gpu: bool) u32 {
+        // Use 70% of available memory for safety margin
+        const usable_mb = @as(f32, @floatFromInt(available_memory_mb)) * 0.7;
+        const available_for_batches = usable_mb - @as(f32, @floatFromInt(self.base_memory_mb));
+
+        if (available_for_batches < self.per_batch_item_mb) {
+            return 1; // Minimum batch size
+        }
+
+        const memory_based_batch: u32 = @intFromFloat(available_for_batches / self.per_batch_item_mb);
+
+        // Use the smaller of memory-based and optimal batch size
+        const optimal = if (is_gpu) self.optimal_gpu_batch else self.optimal_cpu_batch;
+        return @min(memory_based_batch, optimal);
+    }
+
+    /// Get default batch size (when memory is unknown)
+    pub fn getDefaultBatch(self: MemoryProfile, is_gpu: bool) u32 {
+        return if (is_gpu) self.optimal_gpu_batch else self.optimal_cpu_batch;
+    }
 };
 
 /// Files needed for a model
