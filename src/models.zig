@@ -89,8 +89,9 @@ pub const Model = enum {
                 .max_seq_len = 2048,
                 .pooling = .mean,
                 .normalize = true,
-                .query_prefix = null,
-                .passage_prefix = null,
+                // EmbeddingGemma task prompts per Google docs
+                .query_prefix = "task: code retrieval | query: ",
+                .passage_prefix = "title: none | text: ",
                 .use_token_type_ids = false,
                 .model_file = "onnx/model.onnx",
                 .output_is_pooled = true,
@@ -103,8 +104,9 @@ pub const Model = enum {
                 .max_seq_len = 2048,
                 .pooling = .mean,
                 .normalize = true,
-                .query_prefix = null,
-                .passage_prefix = null,
+                // EmbeddingGemma task prompts per Google docs
+                .query_prefix = "task: code retrieval | query: ",
+                .passage_prefix = "title: none | text: ",
                 .use_token_type_ids = false,
                 .model_file = "onnx/model_q4.onnx",
                 .output_is_pooled = true,
@@ -117,8 +119,9 @@ pub const Model = enum {
                 .max_seq_len = 2048,
                 .pooling = .mean,
                 .normalize = true,
-                .query_prefix = null,
-                .passage_prefix = null,
+                // EmbeddingGemma task prompts per Google docs
+                .query_prefix = "task: code retrieval | query: ",
+                .passage_prefix = "title: none | text: ",
                 .use_token_type_ids = false,
                 .model_file = "onnx/model_q4f16.onnx",
                 .output_is_pooled = true,
@@ -131,8 +134,9 @@ pub const Model = enum {
                 .max_seq_len = 2048,
                 .pooling = .mean,
                 .normalize = true,
-                .query_prefix = null,
-                .passage_prefix = null,
+                // EmbeddingGemma task prompts per Google docs
+                .query_prefix = "task: code retrieval | query: ",
+                .passage_prefix = "title: none | text: ",
                 .use_token_type_ids = false,
                 .model_file = "onnx/model_fp16.onnx",
                 .output_is_pooled = true,
@@ -304,8 +308,9 @@ test "EmbeddingGemma 300M base config" {
     try std.testing.expectEqual(@as(usize, 2048), config.max_seq_len);
     try std.testing.expectEqual(pooling.PoolingStrategy.mean, config.pooling);
     try std.testing.expect(config.normalize);
-    try std.testing.expect(config.query_prefix == null);
-    try std.testing.expect(config.passage_prefix == null);
+    // EmbeddingGemma uses task prompts per Google docs
+    try std.testing.expectEqualStrings("task: code retrieval | query: ", config.query_prefix.?);
+    try std.testing.expectEqualStrings("title: none | text: ", config.passage_prefix.?);
     // Gemma doesn't use token_type_ids
     try std.testing.expect(!config.use_token_type_ids);
     try std.testing.expectEqualStrings("onnx/model.onnx", config.model_file);
@@ -526,24 +531,27 @@ test "Query prefix behavior" {
     try std.testing.expect(Model.bge_small_en_v1_5.getConfig().query_prefix != null);
     try std.testing.expect(Model.multilingual_e5_large.getConfig().query_prefix != null);
     try std.testing.expect(Model.bge_small_zh_v1_5.getConfig().query_prefix != null);
+    // EmbeddingGemma uses task prompts
+    try std.testing.expect(Model.embedding_gemma_300m.getConfig().query_prefix != null);
 
     // Symmetric models without query prefix
     try std.testing.expect(Model.all_minilm_l6_v2.getConfig().query_prefix == null);
-    try std.testing.expect(Model.embedding_gemma_300m.getConfig().query_prefix == null);
     try std.testing.expect(Model.granite_embedding_english_r2.getConfig().query_prefix == null);
 }
 
 test "Passage prefix behavior" {
     const std = @import("std");
 
-    // Only E5 has passage prefix
+    // Models with passage prefix
     try std.testing.expect(Model.multilingual_e5_large.getConfig().passage_prefix != null);
     try std.testing.expectEqualStrings("passage: ", Model.multilingual_e5_large.getConfig().passage_prefix.?);
+    // EmbeddingGemma uses task prompts
+    try std.testing.expect(Model.embedding_gemma_300m.getConfig().passage_prefix != null);
+    try std.testing.expectEqualStrings("title: none | text: ", Model.embedding_gemma_300m.getConfig().passage_prefix.?);
 
-    // All others don't have passage prefix
+    // Models without passage prefix
     try std.testing.expect(Model.bge_small_en_v1_5.getConfig().passage_prefix == null);
     try std.testing.expect(Model.all_minilm_l6_v2.getConfig().passage_prefix == null);
-    try std.testing.expect(Model.embedding_gemma_300m.getConfig().passage_prefix == null);
 }
 
 test "ModelFiles constants" {

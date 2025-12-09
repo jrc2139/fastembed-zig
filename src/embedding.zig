@@ -258,6 +258,37 @@ pub const Embedder = struct {
         return self.embedOne(passage);
     }
 
+    /// Generate passage embeddings for multiple texts (adds passage prefix for asymmetric models)
+    /// Returns: [num_texts][hidden_dim] as flattened array
+    pub fn passageEmbedBatch(self: *Self, passages: []const []const u8) EmbedderError![]f32 {
+        if (self.config.passage_prefix) |prefix| {
+            // Allocate prefixed texts
+            var prefixed_texts = self.allocator.alloc([]u8, passages.len) catch return EmbedderError.OutOfMemory;
+            defer {
+                for (prefixed_texts) |text| {
+                    self.allocator.free(text);
+                }
+                self.allocator.free(prefixed_texts);
+            }
+
+            // Prefix each passage
+            for (passages, 0..) |passage, i| {
+                prefixed_texts[i] = std.fmt.allocPrint(self.allocator, "{s}{s}", .{ prefix, passage }) catch {
+                    // Clean up already allocated texts on error
+                    for (prefixed_texts[0..i]) |text| {
+                        self.allocator.free(text);
+                    }
+                    return EmbedderError.OutOfMemory;
+                };
+            }
+
+            // Cast [][]u8 to [][]const u8 for embed()
+            const const_texts: []const []const u8 = @ptrCast(prefixed_texts);
+            return self.embed(const_texts);
+        }
+        return self.embed(passages);
+    }
+
     /// Get embedding dimension
     pub fn getDimension(self: Self) usize {
         return self.config.hidden_dim;
