@@ -4,3 +4,5 @@ main: src/lib.zig
 license: MIT
 description: fastembed written in zig
 dependencies:
+  - src: git https://github.com/jrc2139/tokenizer-zig
+  - src: git https://github.com/jrc2139/onnxruntime-zig

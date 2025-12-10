@@ -1,3 +1,5 @@
 MIT:
 = https://spdx.org/licenses/MIT
 - This
+- git https://github.com/jrc2139/onnxruntime-zig
+- git https://github.com/jrc2139/tokenizer-zig
