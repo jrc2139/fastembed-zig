@@ -141,6 +141,11 @@ pub const Session = struct {
         var session: ?*c_api.OrtSession = null;
         status = api.CreateSession.?(env.ptr, model_path.ptr, opts.?, &session);
         if (status != null) {
+            // Print the actual error message from ONNX Runtime
+            const msg = api.GetErrorMessage.?(status);
+            if (msg != null) {
+                std.debug.print("ONNX Session error: {s}\n", .{msg});
+            }
             api.ReleaseStatus.?(status);
             return OnnxError.SessionCreationFailed;
         }

@@ -240,10 +240,18 @@ pub const Model = enum {
                 .query_prefix = null,
                 .passage_prefix = null,
                 .use_token_type_ids = false,
-                .model_file = "onnx/model_qint8_arm64.onnx",
+                // Architecture-specific model files:
+                // - ARM64 (Apple Silicon): model_qint8_arm64.onnx (QINT8 optimized for ARM NEON)
+                // - x86_64: model_quint8_avx2.onnx (QUINT8 optimized for AVX2, widely compatible)
+                .model_file = if (builtin.cpu.arch == .aarch64)
+                    "onnx/model_qint8_arm64.onnx"
+                else if (builtin.cpu.arch == .x86_64)
+                    "onnx/model_quint8_avx2.onnx"
+                else
+                    "onnx/model_qint8_arm64.onnx", // fallback
                 .output_is_pooled = false,
                 .output_name = null,
-                // QINT8 ARM64 - optimized for Apple Silicon, single file (no external data)
+                // Quantized model - optimized for inference, single file (no external data)
                 .memory_profile = .{ .base_memory_mb = 100, .per_batch_item_mb = 5.0, .optimal_cpu_batch = 64, .optimal_gpu_batch = 128 },
             },
         };
