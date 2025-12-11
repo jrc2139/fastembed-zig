@@ -67,8 +67,9 @@ pub const Embedder = struct {
             return EmbedderError.ModelError;
         };
 
-        // Build paths using model-specific file path
-        const model_onnx_path = std.fs.path.join(allocator, &.{ model_path, config.model_file }) catch return EmbedderError.OutOfMemory;
+        // Build paths - use runtime CPU detection for optimal model file
+        const model_file = options.model.getModelFile();
+        const model_onnx_path = std.fs.path.join(allocator, &.{ model_path, model_file }) catch return EmbedderError.OutOfMemory;
         defer allocator.free(model_onnx_path);
 
         const tokenizer_path = std.fs.path.join(allocator, &.{ model_path, "tokenizer.json" }) catch return EmbedderError.OutOfMemory;

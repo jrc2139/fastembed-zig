@@ -100,11 +100,13 @@ pub const Session = struct {
 
         // Configure execution provider
         const exec_provider = options.execution_provider.resolve();
+        var actual_provider: provider.ExecutionProvider = exec_provider;
         exec_provider.apply(opts.?) catch |err| {
             // If provider fails, fall back to CPU
             std.log.warn("Failed to configure {s} provider: {}, falling back to CPU", .{ options.execution_provider.getName(), err });
+            actual_provider = provider.ExecutionProvider.cpuProvider();
         };
-        std.log.info("Using {s} execution provider", .{exec_provider.getName()});
+        std.log.info("Using {s} execution provider", .{actual_provider.getName()});
 
         // Set graph optimization level
         // For CoreML, we must disable graph optimization to avoid errors with
@@ -112,7 +114,7 @@ pub const Session = struct {
         // like Granite fail with "model_path must not be empty" during session
         // creation. The issue is that ONNX RT's optimizer modifies the graph in
         // ways that confuse the CoreML provider's partitioning logic.
-        const opt_level: c_uint = switch (exec_provider) {
+        const opt_level: c_uint = switch (actual_provider) {
             .coreml => 0, // ORT_DISABLE_ALL - required for CoreML compatibility
             else => 99, // ORT_ENABLE_ALL for maximum CPU performance
         };

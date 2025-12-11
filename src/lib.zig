@@ -52,6 +52,8 @@ pub const Model = models.Model;
 pub const ModelConfig = models.ModelConfig;
 pub const MemoryProfile = models.MemoryProfile;
 pub const getAvailableMemoryMB = models.getAvailableMemoryMB;
+pub const CpuFeatures = models.CpuFeatures;
+pub const getOptimalOnnxFile = models.getOptimalOnnxFile;
 
 // Pooling strategies
 pub const pooling = @import("pooling.zig");
@@ -74,6 +76,11 @@ pub const TokenizerError = tokenizer.TokenizerError;
 
 // Low-level access (ONNX)
 pub const onnx = @import("onnx/session.zig");
+const c_api = @import("onnx/c_api.zig");
+
+// Build configuration - indicates what this binary was compiled with
+pub const cuda_enabled = c_api.cuda_enabled;
+pub const coreml_enabled = c_api.coreml_enabled;
 
 // Utility functions
 

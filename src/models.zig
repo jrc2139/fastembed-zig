@@ -6,6 +6,82 @@ const std = @import("std");
 const builtin = @import("builtin");
 const pooling = @import("pooling.zig");
 
+/// CPU feature detection for optimal model file selection
+/// Detects AVX2, AVX-512, and AVX-512 VNNI at runtime for x86_64
+pub const CpuFeatures = struct {
+    has_avx2: bool = false,
+    has_avx512f: bool = false,
+    has_avx512vnni: bool = false,
+
+    /// Detect CPU features at runtime using CPUID (x86_64 only)
+    pub fn detect() CpuFeatures {
+        if (builtin.cpu.arch != .x86_64) {
+            return .{};
+        }
+
+        var features = CpuFeatures{};
+
+        // CPUID leaf 7, subleaf 0: Extended features
+        // EBX bit 5 = AVX2
+        // EBX bit 16 = AVX-512F (foundation)
+        // ECX bit 11 = AVX-512 VNNI
+        var eax: u32 = undefined;
+        var ebx: u32 = undefined;
+        var ecx: u32 = undefined;
+        var edx: u32 = undefined;
+        asm volatile ("cpuid"
+            : [_] "={eax}" (eax),
+              [_] "={ebx}" (ebx),
+              [_] "={ecx}" (ecx),
+              [_] "={edx}" (edx),
+            : [_] "{eax}" (@as(u32, 7)),
+              [_] "{ecx}" (@as(u32, 0)),
+        );
+        _ = .{ eax, edx }; // Suppress unused warnings
+        features.has_avx2 = (ebx & (1 << 5)) != 0;
+        features.has_avx512f = (ebx & (1 << 16)) != 0;
+        features.has_avx512vnni = (ecx & (1 << 11)) != 0;
+
+        return features;
+    }
+};
+
+/// Get the optimal ONNX model file for the current CPU
+/// Returns the best quantized variant based on detected features:
+/// - ARM64: model_qint8_arm64.onnx (QINT8 for ARM NEON)
+/// - x86_64 + AVX-512 VNNI: model_qint8_avx512_vnni.onnx (best for quantized)
+/// - x86_64 + AVX-512: model_qint8_avx512.onnx (if available)
+/// - x86_64 + AVX2: model_quint8_avx2.onnx (widely compatible)
+/// - Fallback: model.onnx (FP32)
+pub fn getOptimalOnnxFile() []const u8 {
+    if (builtin.cpu.arch == .aarch64) {
+        return "onnx/model_qint8_arm64.onnx";
+    }
+
+    if (builtin.cpu.arch == .x86_64) {
+        // macOS Intel - use AVX2 (all Intel Macs since ~2013 have AVX2)
+        if (builtin.os.tag == .macos) {
+            return "onnx/model_quint8_avx2.onnx";
+        }
+
+        // Linux/Windows x86_64 - detect best available
+        const features = CpuFeatures.detect();
+        if (features.has_avx512vnni) {
+            return "onnx/model_qint8_avx512_vnni.onnx";
+        } else if (features.has_avx512f) {
+            // AVX-512 without VNNI - fall back to AVX2 variant
+            // (most AVX-512 models need VNNI for quantized ops)
+            return "onnx/model_quint8_avx2.onnx";
+        } else if (features.has_avx2) {
+            return "onnx/model_quint8_avx2.onnx";
+        } else {
+            return "onnx/model.onnx"; // FP32 fallback for old CPUs
+        }
+    }
+
+    return "onnx/model.onnx"; // Generic fallback
+}
+
 /// Supported embedding models
 pub const Model = enum {
     /// BAAI BGE small English model (384 dimensions)
@@ -34,6 +110,8 @@ pub const Model = enum {
     granite_embedding_small_english_r2_q4,
     /// IBM Granite Embedding Small English R2 QINT8 ARM64 (384 dimensions) - optimized for Apple Silicon
     granite_embedding_small_english_r2_qint8,
+    /// IBM Granite Embedding English R2 O4 (768 dimensions) - CUDA optimized, opset 18
+    granite_embedding_english_r2_o4,
 
     /// Get model configuration
     pub fn getConfig(self: Model) ModelConfig {
@@ -146,8 +224,8 @@ pub const Model = enum {
                 .model_file = "onnx/model_q4f16.onnx",
                 .output_is_pooled = true,
                 .output_name = "sentence_embedding",
-                // Q4F16 similar to Q4
-                .memory_profile = .{ .base_memory_mb = 1000, .per_batch_item_mb = 100.0, .optimal_cpu_batch = 16, .optimal_gpu_batch = 32 },
+                // Q4F16 - GPU batch 64 for better throughput
+                .memory_profile = .{ .base_memory_mb = 1000, .per_batch_item_mb = 50.0, .optimal_cpu_batch = 8, .optimal_gpu_batch = 64 },
             },
             .embedding_gemma_300m_fp16 => .{
                 .name = "embeddinggemma-300m-fp16",
@@ -163,12 +241,12 @@ pub const Model = enum {
                 .model_file = "onnx/model_fp16.onnx",
                 .output_is_pooled = true,
                 .output_name = "sentence_embedding",
-                // FP16 uses more memory than quantized
-                .memory_profile = .{ .base_memory_mb = 1500, .per_batch_item_mb = 120.0, .optimal_cpu_batch = 8, .optimal_gpu_batch = 16 },
+                // FP16 - GPU batch 64, no dequantization overhead
+                .memory_profile = .{ .base_memory_mb = 1500, .per_batch_item_mb = 60.0, .optimal_cpu_batch = 8, .optimal_gpu_batch = 64 },
             },
             .granite_embedding_english_r2 => .{
                 .name = "granite-embedding-english-r2",
-                .hf_repo = "onnx-community/granite-embedding-english-r2-ONNX",
+                .hf_repo = "jrc2139/granite-embedding-english-r2-ONNX",
                 .hidden_dim = 768,
                 .max_seq_len = 8192,
                 .pooling = .mean,
@@ -176,7 +254,11 @@ pub const Model = enum {
                 .query_prefix = null,
                 .passage_prefix = null,
                 .use_token_type_ids = false, // ModernBERT doesn't use token_type_ids
-                .model_file = "onnx/model_quantized.onnx",
+                // Architecture-specific model files for CPU:
+                .model_file = if (builtin.cpu.arch == .aarch64)
+                    "onnx/model_qint8_arm64.onnx"
+                else
+                    "onnx/model_quint8_avx2.onnx",
                 .output_is_pooled = false, // BERT-style output needs pooling
                 .output_name = null, // Use default output (last_hidden_state)
                 // Granite has very long context (8192) - memory scales with sequence length
@@ -254,6 +336,39 @@ pub const Model = enum {
                 // Quantized model - optimized for inference, single file (no external data)
                 .memory_profile = .{ .base_memory_mb = 100, .per_batch_item_mb = 5.0, .optimal_cpu_batch = 64, .optimal_gpu_batch = 128 },
             },
+            .granite_embedding_english_r2_o4 => .{
+                // Same model as granite_embedding_english_r2, but uses FP16 CUDA ONNX file
+                .name = "granite-embedding-english-r2", // Same directory as CPU variant
+                .hf_repo = "jrc2139/granite-embedding-english-r2-ONNX",
+                .hidden_dim = 768,
+                .max_seq_len = 8192,
+                .pooling = .mean,
+                .normalize = true,
+                .query_prefix = null,
+                .passage_prefix = null,
+                .use_token_type_ids = false,
+                .model_file = "onnx/model_f16_cuda.onnx", // FP16 optimized for CUDA
+                .output_is_pooled = false,
+                .output_name = null,
+                // FP16 model optimized for GPU inference
+                .memory_profile = .{ .base_memory_mb = 1500, .per_batch_item_mb = 80.0, .optimal_cpu_batch = 8, .optimal_gpu_batch = 64 },
+            },
+        };
+    }
+
+    /// Get the optimal model file for this model type based on runtime CPU detection
+    /// For models with multiple quantized variants (granite_embedding_english_r2, etc.),
+    /// this uses runtime CPU feature detection to select the best variant.
+    /// For other models, returns the compile-time default from getConfig().
+    pub fn getModelFile(self: Model) []const u8 {
+        return switch (self) {
+            // Models with runtime CPU-specific variants
+            .granite_embedding_english_r2,
+            .granite_embedding_small_english_r2_qint8,
+            => getOptimalOnnxFile(),
+
+            // All other models use compile-time default
+            else => self.getConfig().model_file,
         };
     }
 };

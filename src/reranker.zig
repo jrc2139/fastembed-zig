@@ -24,6 +24,7 @@
 const std = @import("std");
 const tokenizer_mod = @import("tokenizer/tokenizer.zig");
 const onnx = @import("onnx/session.zig");
+const models_mod = @import("models.zig");
 
 pub const RerankerError = error{
     TokenizerError,
@@ -33,51 +34,53 @@ pub const RerankerError = error{
     OutOfMemory,
 };
 
+const builtin = @import("builtin");
+
+// Re-use CPU feature detection from models.zig
+const CpuFeatures = models_mod.CpuFeatures;
+
+/// Get the optimal reranker ONNX model file for the current CPU
+/// Uses runtime detection for x86_64 to select the best quantized variant
+fn getOptimalRerankerOnnxFile() []const u8 {
+    // Reranker uses same file naming as embedding model
+    return models_mod.getOptimalOnnxFile();
+}
+
 /// Reranker model types
 pub const RerankerModel = enum {
-    /// Granite Embedding Reranker English R2 (INT8 quantized, ARM64 optimized)
-    granite_reranker_english_r2_qint8_arm64,
-    /// Granite Embedding Reranker English R2 (INT8 quantized, AVX512)
-    granite_reranker_english_r2_qint8_avx512,
-    /// Granite Embedding Reranker English R2 (UINT8 quantized, AVX2)
-    granite_reranker_english_r2_quint8_avx2,
-    /// Granite Embedding Reranker English R2 (FP32)
+    /// Granite Embedding Reranker English R2 (CPU - auto-selects arch-specific quantized file)
     granite_reranker_english_r2,
-    /// Granite Embedding Reranker English R2 (O3 optimized FP32)
-    granite_reranker_english_r2_o3,
+    /// Granite Embedding Reranker English R2 (O4 optimized for CUDA)
+    granite_reranker_english_r2_o4,
 
     pub fn getConfig(self: RerankerModel) RerankerConfig {
         return switch (self) {
-            .granite_reranker_english_r2_qint8_arm64 => .{
-                .model_file = "onnx/model_qint8_arm64.onnx",
-                .hidden_dim = 768,
-                .max_seq_len = 8192,
-                .num_labels = 1,
-            },
-            .granite_reranker_english_r2_qint8_avx512 => .{
-                .model_file = "onnx/model_qint8_avx512_vnni.onnx",
-                .hidden_dim = 768,
-                .max_seq_len = 8192,
-                .num_labels = 1,
-            },
-            .granite_reranker_english_r2_quint8_avx2 => .{
-                .model_file = "onnx/model_quint8_avx2.onnx",
-                .hidden_dim = 768,
-                .max_seq_len = 8192,
-                .num_labels = 1,
-            },
             .granite_reranker_english_r2 => .{
-                .model_file = "onnx/model.onnx",
+                // Compile-time fallback - use getModelFile() for runtime detection
+                .model_file = if (builtin.cpu.arch == .aarch64)
+                    "onnx/model_qint8_arm64.onnx"
+                else
+                    "onnx/model_quint8_avx2.onnx",
                 .hidden_dim = 768,
                 .max_seq_len = 8192,
                 .num_labels = 1,
             },
-            .granite_reranker_english_r2_o3 => .{
-                .model_file = "onnx/model_O3.onnx",
+            .granite_reranker_english_r2_o4 => .{
+                .model_file = "onnx/model_f16_cuda.onnx", // FP16 optimized for CUDA
                 .hidden_dim = 768,
                 .max_seq_len = 8192,
                 .num_labels = 1,
             },
+        };
+    }
+
+    /// Get the optimal model file for this reranker type based on runtime CPU detection
+    /// For CPU variants, uses runtime CPU feature detection to select the best variant.
+    /// For CUDA, returns the FP16 CUDA-optimized file.
+    pub fn getModelFile(self: RerankerModel) []const u8 {
+        return switch (self) {
+            .granite_reranker_english_r2 => getOptimalRerankerOnnxFile(),
+            .granite_reranker_english_r2_o4 => "onnx/model_f16_cuda.onnx",
         };
     }
 };
@@ -95,8 +98,8 @@ pub const ExecutionProvider = onnx.ExecutionProvider;
 
 /// Options for creating a Reranker
 pub const RerankerOptions = struct {
-    /// Model to use (default: ARM64 optimized INT8)
-    model: RerankerModel = .granite_reranker_english_r2_qint8_arm64,
+    /// Model to use (default: CPU with arch-specific quantization)
+    model: RerankerModel = .granite_reranker_english_r2,
     /// Path to model directory (required)
     model_path: ?[]const u8 = null,
     /// Maximum sequence length (0 = use model default of 8192)
@@ -132,8 +135,9 @@ pub const Reranker = struct {
             return RerankerError.ModelError;
         };
 
-        // Build paths
-        const model_onnx_path = std.fs.path.join(allocator, &.{ model_path, config.model_file }) catch return RerankerError.OutOfMemory;
+        // Build paths - use runtime CPU detection for optimal model file
+        const model_file = options.model.getModelFile();
+        const model_onnx_path = std.fs.path.join(allocator, &.{ model_path, model_file }) catch return RerankerError.OutOfMemory;
         defer allocator.free(model_onnx_path);
 
         const tokenizer_path = std.fs.path.join(allocator, &.{ model_path, "tokenizer.json" }) catch return RerankerError.OutOfMemory;
@@ -322,11 +326,8 @@ test "Reranker struct compiles" {
 
 test "RerankerModel enum" {
     const models = [_]RerankerModel{
-        .granite_reranker_english_r2_qint8_arm64,
-        .granite_reranker_english_r2_qint8_avx512,
-        .granite_reranker_english_r2_quint8_avx2,
         .granite_reranker_english_r2,
-        .granite_reranker_english_r2_o3,
+        .granite_reranker_english_r2_o4,
     };
 
     for (models) |m| {
@@ -340,7 +341,7 @@ test "RerankerModel enum" {
 test "RerankerOptions default values" {
     const opts = RerankerOptions{};
 
-    try std.testing.expectEqual(RerankerModel.granite_reranker_english_r2_qint8_arm64, opts.model);
+    try std.testing.expectEqual(RerankerModel.granite_reranker_english_r2, opts.model);
     try std.testing.expect(opts.model_path == null);
     try std.testing.expectEqual(@as(usize, 0), opts.max_seq_len);
 }

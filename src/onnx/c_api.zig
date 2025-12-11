@@ -9,6 +9,9 @@ const build_options = @import("build_options");
 /// Whether CoreML is enabled (controlled by build.zig)
 pub const coreml_enabled = build_options.coreml_enabled;
 
+/// Whether CUDA is enabled (controlled by build.zig)
+pub const cuda_enabled = build_options.cuda_enabled;
+
 pub const c = @cImport({
     @cInclude("onnxruntime_c_api.h");
     if (coreml_enabled) {
@@ -92,6 +95,28 @@ pub const CoreMLFlags = struct {
 pub extern fn OrtSessionOptionsAppendExecutionProvider_CoreML(
     options: *OrtSessionOptions,
     coreml_flags: u32,
+) ?*OrtStatus;
+
+/// CUDA provider options struct (used when cuda_enabled is true)
+pub const OrtCUDAProviderOptions = extern struct {
+    device_id: c_int = 0,
+    cudnn_conv_algo_search: c_int = 0, // OrtCudnnConvAlgoSearchDefault
+    gpu_mem_limit: usize = @as(usize, @bitCast(@as(isize, -1))), // SIZE_MAX = no limit
+    arena_extend_strategy: c_int = 0,
+    do_copy_in_default_stream: c_int = 1,
+    has_user_compute_stream: c_int = 0,
+    user_compute_stream: ?*anyopaque = null,
+    default_memory_arena_cfg: ?*anyopaque = null,
+    tunable_op_enable: c_int = 0,
+    tunable_op_tuning_enable: c_int = 0,
+    tunable_op_max_tuning_duration_ms: c_int = 0,
+};
+
+/// Append CUDA execution provider to session options (only available when cuda_enabled)
+/// This extern is only valid when linking against CUDA-enabled ONNX Runtime
+pub extern fn OrtSessionOptionsAppendExecutionProvider_CUDA(
+    options: *OrtSessionOptions,
+    device_id: c_int,
 ) ?*OrtStatus;
 
 test "can get API" {

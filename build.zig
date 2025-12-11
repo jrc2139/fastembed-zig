@@ -11,9 +11,13 @@ pub fn build(b: *std.Build) void {
     const default_coreml = !use_static;
     const coreml_enabled = b.option(bool, "coreml", "Enable CoreML execution provider (macOS only)") orelse default_coreml;
 
+    // Build option for CUDA support (requires dynamically linked CUDA ONNX Runtime)
+    const cuda_enabled = b.option(bool, "cuda", "Enable CUDA execution provider") orelse false;
+
     // Create build options module
     const build_options = b.addOptions();
     build_options.addOption(bool, "coreml_enabled", coreml_enabled);
+    build_options.addOption(bool, "cuda_enabled", cuda_enabled);
 
     // -------------------------------------------------------------------------
     // Dependencies
@@ -27,13 +31,19 @@ pub fn build(b: *std.Build) void {
     const tokenizer_mod = tokenizer_dep.module("tokenizer");
 
     // ONNX Runtime paths
-    const ort_include = if (use_static)
+    // For CUDA builds, use ~/.osgrep/onnxruntime-cuda/{include,lib}
+    const home = std.posix.getenv("HOME") orelse "/tmp";
+    const ort_include: std.Build.LazyPath = if (use_static)
         b.path("deps/onnxruntime-static/include")
+    else if (cuda_enabled)
+        .{ .cwd_relative = b.fmt("{s}/.osgrep/onnxruntime-cuda/include", .{home}) }
     else
         b.path("deps/onnxruntime/include");
 
-    const ort_lib = if (use_static)
+    const ort_lib: std.Build.LazyPath = if (use_static)
         b.path("deps/onnxruntime-static/lib")
+    else if (cuda_enabled)
+        .{ .cwd_relative = b.fmt("{s}/.osgrep/onnxruntime-cuda/lib", .{home}) }
     else
         b.path("deps/onnxruntime/lib");
 

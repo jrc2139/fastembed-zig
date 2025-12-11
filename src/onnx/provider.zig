@@ -148,10 +148,21 @@ pub const ExecutionProvider = union(enum) {
                 }
             },
             .cuda => |cuda_opts| {
-                _ = cuda_opts;
-                // CUDA configuration would go here
-                // For now, CUDA is not supported in this build
-                return error.ProviderNotAvailable;
+                // CUDA requires the CUDA-enabled ONNX Runtime to be dynamically linked.
+                if (comptime !c_api.cuda_enabled) {
+                    // Static build or CUDA not enabled at compile time
+                    // To use CUDA, rebuild with: zig build -Dcuda=true
+                    // And ensure ~/.osgrep/onnxruntime-cuda/lib contains the CUDA libs
+                    return error.ProviderNotAvailable;
+                }
+
+                // Configure CUDA provider
+                const status = c_api.OrtSessionOptionsAppendExecutionProvider_CUDA(opts, @intCast(cuda_opts.device_id));
+                if (status != null) {
+                    const api = c_api.getApi() orelse return error.ApiNotAvailable;
+                    api.ReleaseStatus.?(status);
+                    return error.ProviderConfigurationFailed;
+                }
             },
             .auto => unreachable, // resolve() handles auto
         }
