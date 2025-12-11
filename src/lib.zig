@@ -81,6 +81,11 @@ const c_api = @import("onnx/c_api.zig");
 // Build configuration - indicates what this binary was compiled with
 pub const cuda_enabled = c_api.cuda_enabled;
 pub const coreml_enabled = c_api.coreml_enabled;
+pub const dynamic_ort = c_api.dynamic_ort;
+
+// Dynamic loading utilities
+pub const isCudaRuntimeAvailable = c_api.isCudaRuntimeAvailable;
+pub const isDynamicCudaLoaded = c_api.isDynamicCudaLoaded;
 
 // Utility functions
 

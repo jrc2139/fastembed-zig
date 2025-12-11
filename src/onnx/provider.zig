@@ -148,20 +148,33 @@ pub const ExecutionProvider = union(enum) {
                 }
             },
             .cuda => |cuda_opts| {
-                // CUDA requires the CUDA-enabled ONNX Runtime to be dynamically linked.
-                if (comptime !c_api.cuda_enabled) {
-                    // Static build or CUDA not enabled at compile time
-                    // To use CUDA, rebuild with: zig build -Dcuda=true
-                    // And ensure ~/.osgrep/onnxruntime-cuda/lib contains the CUDA libs
+                // Check if using dynamic ONNX Runtime loading
+                if (comptime c_api.dynamic_ort) {
+                    // Dynamic loading mode - use the dynamically discovered CUDA provider
+                    const cuda_fn = c_api.getDynamicCudaProvider() orelse {
+                        // CUDA provider not available in the loaded runtime
+                        return error.ProviderNotAvailable;
+                    };
+                    const status = cuda_fn(opts, @intCast(cuda_opts.device_id));
+                    if (status != null) {
+                        const api = c_api.getApi() orelse return error.ApiNotAvailable;
+                        api.ReleaseStatus.?(status);
+                        return error.ProviderConfigurationFailed;
+                    }
+                } else if (comptime c_api.cuda_enabled) {
+                    // Static/linked mode with CUDA enabled at compile time
+                    const status = c_api.OrtSessionOptionsAppendExecutionProvider_CUDA(opts, @intCast(cuda_opts.device_id));
+                    if (status != null) {
+                        const api = c_api.getApi() orelse return error.ApiNotAvailable;
+                        api.ReleaseStatus.?(status);
+                        return error.ProviderConfigurationFailed;
+                    }
+                } else {
+                    // Static build without CUDA enabled
+                    // To use CUDA, either:
+                    // 1. Rebuild with: zig build -Dcuda=true
+                    // 2. Rebuild with: zig build -Ddynamic-ort=true (auto-detects CUDA at runtime)
                     return error.ProviderNotAvailable;
-                }
-
-                // Configure CUDA provider
-                const status = c_api.OrtSessionOptionsAppendExecutionProvider_CUDA(opts, @intCast(cuda_opts.device_id));
-                if (status != null) {
-                    const api = c_api.getApi() orelse return error.ApiNotAvailable;
-                    api.ReleaseStatus.?(status);
-                    return error.ProviderConfigurationFailed;
                 }
             },
             .auto => unreachable, // resolve() handles auto
@@ -180,8 +193,18 @@ pub const ExecutionProvider = union(enum) {
             }
         }
 
-        // On other platforms or when CoreML is disabled, fall back to CPU
-        // TODO: Add CUDA detection for Linux
+        // Check for CUDA availability
+        if (comptime c_api.dynamic_ort) {
+            // Dynamic loading mode - check if CUDA was detected at runtime
+            if (c_api.isDynamicCudaLoaded()) {
+                return ExecutionProvider.cudaProvider(0);
+            }
+        } else if (comptime c_api.cuda_enabled) {
+            // Static/linked mode with CUDA enabled at compile time
+            return ExecutionProvider.cudaProvider(0);
+        }
+
+        // Fall back to CPU
         return ExecutionProvider.cpuProvider();
     }
 };

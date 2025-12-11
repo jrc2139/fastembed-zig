@@ -1,16 +1,23 @@
 //! Raw C bindings for ONNX Runtime C API
 //!
-//! This module provides direct access to the ONNX Runtime C API via @cImport.
+//! This module provides direct access to the ONNX Runtime C API.
+//! When dynamic_ort is enabled, the library is loaded at runtime via dlopen.
 //! CoreML support is optional and controlled by the coreml_enabled build option.
 
+const std = @import("std");
 const builtin = @import("builtin");
 const build_options = @import("build_options");
+
+const log = std.log.scoped(.onnx_loader);
 
 /// Whether CoreML is enabled (controlled by build.zig)
 pub const coreml_enabled = build_options.coreml_enabled;
 
 /// Whether CUDA is enabled (controlled by build.zig)
 pub const cuda_enabled = build_options.cuda_enabled;
+
+/// Whether dynamic loading is enabled (controlled by build.zig)
+pub const dynamic_ort = if (@hasDecl(build_options, "dynamic_ort")) build_options.dynamic_ort else false;
 
 pub const c = @cImport({
     @cInclude("onnxruntime_c_api.h");
@@ -35,9 +42,159 @@ pub const OrtTensorTypeAndShapeInfo = c.OrtTensorTypeAndShapeInfo;
 
 pub const ORT_API_VERSION = c.ORT_API_VERSION;
 
+// =============================================================================
+// Dynamic loading support
+// =============================================================================
+
+/// Error types for dynamic loading
+pub const LoadError = error{
+    LibraryNotFound,
+    SymbolNotFound,
+    ApiNotAvailable,
+};
+
+/// Function pointer type for OrtGetApiBase
+const GetApiBaseFn = *const fn () callconv(.c) *const OrtApiBase;
+
+/// Global state for dynamic loading
+var dynamic_api_base: ?*const OrtApiBase = null;
+var dynamic_handle: ?*anyopaque = null;
+var dynamic_mutex: std.Thread.Mutex = .{};
+var dynamic_cuda_provider_fn: ?*const fn (*OrtSessionOptions, c_int) callconv(.c) ?*OrtStatus = null;
+
+/// Check if CUDA ONNX Runtime library exists (without loading)
+pub fn isCudaRuntimeAvailable() bool {
+    const home = std.posix.getenv("HOME") orelse return false;
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const cuda_lib_path = std.fmt.bufPrint(&path_buf, "{s}/.osgrep/onnxruntime-cuda/lib/libonnxruntime.so", .{home}) catch return false;
+    std.fs.accessAbsolute(cuda_lib_path, .{}) catch return false;
+    return true;
+}
+
+/// Load ONNX Runtime dynamically at runtime
+fn loadDynamic() LoadError!*const OrtApiBase {
+    dynamic_mutex.lock();
+    defer dynamic_mutex.unlock();
+
+    // Return cached if already loaded
+    if (dynamic_api_base) |base| {
+        return base;
+    }
+
+    // Try CUDA version first
+    if (loadFromCudaPath()) |result| {
+        dynamic_api_base = result.base;
+        dynamic_handle = result.handle;
+        dynamic_cuda_provider_fn = result.cuda_fn;
+        log.info("Loaded CUDA-enabled ONNX Runtime dynamically", .{});
+        return result.base;
+    } else |_| {
+        log.debug("CUDA ONNX Runtime not available, trying system version", .{});
+    }
+
+    // Fall back to system version
+    if (loadFromSystemPath()) |result| {
+        dynamic_api_base = result.base;
+        dynamic_handle = result.handle;
+        dynamic_cuda_provider_fn = null;
+        log.info("Loaded system ONNX Runtime (CPU) dynamically", .{});
+        return result.base;
+    } else |err| {
+        log.err("Failed to load any ONNX Runtime library", .{});
+        return err;
+    }
+}
+
+const LoadResult = struct {
+    base: *const OrtApiBase,
+    handle: *anyopaque,
+    cuda_fn: ?*const fn (*OrtSessionOptions, c_int) callconv(.c) ?*OrtStatus,
+};
+
+fn loadFromCudaPath() LoadError!LoadResult {
+    const home = std.posix.getenv("HOME") orelse return LoadError.LibraryNotFound;
+    var path_buf: [std.fs.max_path_bytes:0]u8 = undefined;
+    const len = std.fmt.bufPrint(&path_buf, "{s}/.osgrep/onnxruntime-cuda/lib/libonnxruntime.so", .{home}) catch {
+        return LoadError.LibraryNotFound;
+    };
+    path_buf[len.len] = 0;
+
+    return loadFromPath(&path_buf, true);
+}
+
+fn loadFromSystemPath() LoadError!LoadResult {
+    // Try common library names
+    const lib_names = [_][:0]const u8{
+        "libonnxruntime.so.1",
+        "libonnxruntime.so",
+        "libonnxruntime.dylib",
+    };
+
+    for (lib_names) |name| {
+        if (loadFromPath(name, false)) |result| {
+            return result;
+        } else |_| {
+            continue;
+        }
+    }
+
+    return LoadError.LibraryNotFound;
+}
+
+fn loadFromPath(path: [:0]const u8, is_cuda: bool) LoadError!LoadResult {
+    const handle = std.c.dlopen(path.ptr, .{ .LAZY = true }) orelse {
+        return LoadError.LibraryNotFound;
+    };
+    errdefer _ = std.c.dlclose(handle);
+
+    // Get OrtGetApiBase function
+    const get_api_base_ptr = std.c.dlsym(handle, "OrtGetApiBase") orelse {
+        return LoadError.SymbolNotFound;
+    };
+    const get_api_base: GetApiBaseFn = @ptrCast(get_api_base_ptr);
+
+    const api_base = get_api_base();
+
+    // Try to get CUDA provider function (optional, only for CUDA builds)
+    var cuda_fn: ?*const fn (*OrtSessionOptions, c_int) callconv(.c) ?*OrtStatus = null;
+    if (is_cuda) {
+        if (std.c.dlsym(handle, "OrtSessionOptionsAppendExecutionProvider_CUDA")) |ptr| {
+            cuda_fn = @ptrCast(ptr);
+        }
+    }
+
+    return LoadResult{
+        .base = api_base,
+        .handle = handle,
+        .cuda_fn = cuda_fn,
+    };
+}
+
+/// Get the dynamically loaded CUDA provider function (if available)
+pub fn getDynamicCudaProvider() ?*const fn (*OrtSessionOptions, c_int) callconv(.c) ?*OrtStatus {
+    return dynamic_cuda_provider_fn;
+}
+
+/// Check if runtime was loaded with CUDA support
+pub fn isDynamicCudaLoaded() bool {
+    return dynamic_cuda_provider_fn != null;
+}
+
+// =============================================================================
+// Public API
+// =============================================================================
+
 /// Get the ONNX Runtime API base
 pub fn getApiBase() *const OrtApiBase {
-    return c.OrtGetApiBase();
+    if (comptime dynamic_ort) {
+        // Dynamic loading mode - use dlopen
+        return loadDynamic() catch |err| {
+            std.debug.panic("Failed to load ONNX Runtime dynamically: {}", .{err});
+        };
+    } else {
+        // Static/linked mode - use direct call
+        return c.OrtGetApiBase();
+    }
 }
 
 /// Get the ONNX Runtime API for the current version
@@ -121,6 +278,5 @@ pub extern fn OrtSessionOptionsAppendExecutionProvider_CUDA(
 
 test "can get API" {
     const api = getApi();
-    const std = @import("std");
     try std.testing.expect(api != null);
 }

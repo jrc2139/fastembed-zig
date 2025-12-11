@@ -7,17 +7,24 @@ pub fn build(b: *std.Build) void {
     // Build option for static linking
     const use_static = b.option(bool, "static", "Link against static ONNX Runtime libraries") orelse false;
 
+    // Build option for dynamic ONNX Runtime loading (dlopen at runtime)
+    // When enabled, the binary doesn't link against ONNX Runtime and can load it at runtime
+    // This enables a single binary that works with or without CUDA
+    const dynamic_ort = b.option(bool, "dynamic-ort", "Load ONNX Runtime dynamically at runtime (enables CUDA auto-detection)") orelse false;
+
     // Build option for CoreML support (default: true for dynamic, false for static on macOS)
-    const default_coreml = !use_static;
+    const default_coreml = !use_static and !dynamic_ort;
     const coreml_enabled = b.option(bool, "coreml", "Enable CoreML execution provider (macOS only)") orelse default_coreml;
 
     // Build option for CUDA support (requires dynamically linked CUDA ONNX Runtime)
+    // When dynamic_ort is enabled, CUDA is automatically detected at runtime
     const cuda_enabled = b.option(bool, "cuda", "Enable CUDA execution provider") orelse false;
 
     // Create build options module
     const build_options = b.addOptions();
     build_options.addOption(bool, "coreml_enabled", coreml_enabled);
     build_options.addOption(bool, "cuda_enabled", cuda_enabled);
+    build_options.addOption(bool, "dynamic_ort", dynamic_ort);
 
     // -------------------------------------------------------------------------
     // Dependencies
@@ -32,8 +39,9 @@ pub fn build(b: *std.Build) void {
 
     // ONNX Runtime paths
     // For CUDA builds, use ~/.osgrep/onnxruntime-cuda/{include,lib}
+    // For dynamic-ort, we use static headers for @cImport (same headers, no linking)
     const home = std.posix.getenv("HOME") orelse "/tmp";
-    const ort_include: std.Build.LazyPath = if (use_static)
+    const ort_include: std.Build.LazyPath = if (use_static or dynamic_ort)
         b.path("deps/onnxruntime-static/include")
     else if (cuda_enabled)
         .{ .cwd_relative = b.fmt("{s}/.osgrep/onnxruntime-cuda/include", .{home}) }
@@ -56,10 +64,21 @@ pub fn build(b: *std.Build) void {
         o_lib: std.Build.LazyPath,
         static: bool,
         coreml: bool,
+        dynamic: bool,
 
         fn configure(ctx: @This(), module: *std.Build.Module) void {
-            // ONNX Runtime
+            // Always need include path for type definitions (@cImport)
             module.addIncludePath(ctx.o_include);
+
+            // When dynamic loading is enabled, don't link against ONNX Runtime
+            // It will be loaded at runtime via dlopen
+            if (ctx.dynamic) {
+                // Still need libc for dlopen/dlsym
+                module.link_libc = true;
+                return;
+            }
+
+            // ONNX Runtime library path
             module.addLibraryPath(ctx.o_lib);
 
             if (ctx.static) {
@@ -93,6 +112,7 @@ pub fn build(b: *std.Build) void {
         .o_lib = ort_lib,
         .static = use_static,
         .coreml = coreml_enabled,
+        .dynamic = dynamic_ort,
     };
 
     // -------------------------------------------------------------------------
