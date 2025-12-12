@@ -261,10 +261,16 @@ pub const Embedder = struct {
             break :blk hidden_states;
         } else blk: {
             defer self.allocator.free(hidden_states);
+
+            // Calculate actual output sequence length from the tensor size
+            // hidden_states shape is [batch_size, output_seq_len, hidden_dim]
+            // ONNX may return a different seq_len than the padded input (e.g., if model truncates)
+            const output_seq_len = hidden_states.len / (batch_size * self.config.hidden_dim);
+
             // Need to pool the token-level outputs
             break :blk switch (self.config.pooling) {
-                .cls => pooling.poolCls(hidden_states, batch_size, padded_len, self.config.hidden_dim, self.allocator) catch return EmbedderError.OutOfMemory,
-                .mean => pooling.poolMean(hidden_states, attention_mask, batch_size, padded_len, self.config.hidden_dim, self.allocator) catch return EmbedderError.OutOfMemory,
+                .cls => pooling.poolCls(hidden_states, batch_size, output_seq_len, self.config.hidden_dim, self.allocator) catch return EmbedderError.OutOfMemory,
+                .mean => pooling.poolMean(hidden_states, attention_mask, batch_size, output_seq_len, self.config.hidden_dim, self.allocator) catch return EmbedderError.OutOfMemory,
             };
         };
 
