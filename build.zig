@@ -9,7 +9,6 @@ pub fn build(b: *std.Build) void {
     const dynamic_ort = b.option(bool, "dynamic-ort", "Load ONNX Runtime dynamically at runtime") orelse false;
     const coreml_enabled = b.option(bool, "coreml", "Enable CoreML execution provider (macOS only)") orelse false;
     const cuda_enabled = b.option(bool, "cuda", "Enable CUDA execution provider") orelse false;
-    const coverage = b.option(bool, "coverage", "Emit debug info for code coverage") orelse false;
 
     // Create build options module
     const build_options = b.addOptions();
@@ -46,18 +45,21 @@ pub fn build(b: *std.Build) void {
     // Tests
     // -------------------------------------------------------------------------
     const lib_tests = b.addTest(.{
-        .root_source_file = b.path("src/lib.zig"),
-        .target = target,
-        .optimize = optimize,
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/lib.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "tokenizer", .module = tokenizer_mod },
+                .{ .name = "build_options", .module = build_options.createModule() },
+            },
+        }),
     });
-    lib_tests.root_module.addImport("tokenizer", tokenizer_mod);
-    lib_tests.root_module.addImport("build_options", build_options.createModule());
     lib_tests.root_module.addIncludePath(b.path("deps/onnxruntime-static/include"));
+    lib_tests.root_module.addLibraryPath(b.path("deps/onnxruntime/lib"));
+    lib_tests.root_module.linkSystemLibrary("onnxruntime", .{});
+    lib_tests.root_module.addRPath(b.path("deps/onnxruntime/lib"));
     lib_tests.linkLibC();
-
-    if (coverage) {
-        lib_tests.root_module.strip = false;
-    }
 
     const test_step = b.step("test", "Run all tests");
     test_step.dependOn(&b.addRunArtifact(lib_tests).step);
@@ -67,11 +69,15 @@ pub fn build(b: *std.Build) void {
     // -------------------------------------------------------------------------
     const embed_example = b.addExecutable(.{
         .name = "basic_embed",
-        .root_source_file = b.path("examples/basic_embed.zig"),
-        .target = target,
-        .optimize = optimize,
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("examples/basic_embed.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "fastembed", .module = fastembed_mod },
+            },
+        }),
     });
-    embed_example.root_module.addImport("fastembed", fastembed_mod);
     embed_example.root_module.addIncludePath(b.path("deps/onnxruntime-static/include"));
     embed_example.linkLibC();
 
@@ -96,11 +102,15 @@ pub fn build(b: *std.Build) void {
     // -------------------------------------------------------------------------
     const tokenize_example = b.addExecutable(.{
         .name = "basic_tokenize",
-        .root_source_file = b.path("examples/basic_tokenize.zig"),
-        .target = target,
-        .optimize = optimize,
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("examples/basic_tokenize.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "fastembed", .module = fastembed_mod },
+            },
+        }),
     });
-    tokenize_example.root_module.addImport("fastembed", fastembed_mod);
     b.installArtifact(tokenize_example);
 
     // -------------------------------------------------------------------------
@@ -108,11 +118,15 @@ pub fn build(b: *std.Build) void {
     // -------------------------------------------------------------------------
     const benchmark_example = b.addExecutable(.{
         .name = "benchmark",
-        .root_source_file = b.path("examples/benchmark.zig"),
-        .target = target,
-        .optimize = optimize,
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("examples/benchmark.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "fastembed", .module = fastembed_mod },
+            },
+        }),
     });
-    benchmark_example.root_module.addImport("fastembed", fastembed_mod);
     benchmark_example.root_module.addIncludePath(b.path("deps/onnxruntime-static/include"));
     benchmark_example.linkLibC();
     if (!dynamic_ort) {
@@ -126,12 +140,16 @@ pub fn build(b: *std.Build) void {
     // Check (for ZLS)
     // -------------------------------------------------------------------------
     const check = b.addTest(.{
-        .root_source_file = b.path("src/lib.zig"),
-        .target = target,
-        .optimize = optimize,
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/lib.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "tokenizer", .module = tokenizer_mod },
+                .{ .name = "build_options", .module = build_options.createModule() },
+            },
+        }),
     });
-    check.root_module.addImport("tokenizer", tokenizer_mod);
-    check.root_module.addImport("build_options", build_options.createModule());
     check.root_module.addIncludePath(b.path("deps/onnxruntime-static/include"));
 
     const check_step = b.step("check", "Check for compilation errors");
