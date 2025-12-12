@@ -39,6 +39,12 @@ jobs:
         with:
           version: 0.15.2
 
+      - name: Install zigmod
+        uses: sigit-io/setup-zigmod@v1
+
+      - name: Fetch zigmod dependencies
+        run: zigmod fetch
+
       - name: Cache Zig build
         uses: actions/cache@v4
         with:
@@ -99,6 +105,12 @@ jobs:
         uses: mlugg/setup-zig@v2
         with:
           version: 0.15.2
+
+      - name: Install zigmod
+        uses: sigit-io/setup-zigmod@v1
+
+      - name: Fetch zigmod dependencies
+        run: zigmod fetch
 
       - name: Cache Zig build
         uses: actions/cache@v4
@@ -175,6 +187,12 @@ jobs:
         with:
           version: 0.15.2
 
+      - name: Install zigmod
+        uses: sigit-io/setup-zigmod@v1
+
+      - name: Fetch zigmod dependencies
+        run: zigmod fetch
+
       - name: Cache Zig build
         uses: actions/cache@v4
         with:
@@ -224,6 +242,12 @@ jobs:
         uses: mlugg/setup-zig@v2
         with:
           version: 0.15.2
+
+      - name: Install zigmod
+        uses: sigit-io/setup-zigmod@v1
+
+      - name: Fetch zigmod dependencies
+        run: zigmod fetch
 
       - name: Cache ONNX Runtime
         id: cache-ort

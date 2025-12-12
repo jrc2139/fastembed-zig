@@ -11,7 +11,7 @@
     },
     .dependencies = .{
         .tokenizer = .{
-            .path = "../tokenizer-zig",
+            .path = ".zigmod/deps/git/github.com/jrc2139/tokenizer-zig",
         },
     },
 }
