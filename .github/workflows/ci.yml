@@ -39,8 +39,8 @@ jobs:
         with:
           version: 0.15.2
 
-      - name: Install zigmod
-        uses: sigit-io/setup-zigmod@v1
+      - name: Setup Zigmod
+        uses: nektro/actions-setup-zigmod@v1.0.0
 
       - name: Fetch zigmod dependencies
         run: zigmod fetch
