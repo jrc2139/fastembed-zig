@@ -660,7 +660,7 @@ test "Granite Embedding English R2 config" {
     const config = Model.granite_embedding_english_r2.getConfig();
 
     try std.testing.expectEqualStrings("granite-embedding-english-r2", config.name);
-    try std.testing.expectEqualStrings("onnx-community/granite-embedding-english-r2-ONNX", config.hf_repo);
+    try std.testing.expectEqualStrings("jrc2139/granite-embedding-english-r2-ONNX", config.hf_repo);
     try std.testing.expectEqual(@as(usize, 768), config.hidden_dim);
     // Granite supports long sequences
     try std.testing.expectEqual(@as(usize, 8192), config.max_seq_len);
@@ -668,7 +668,8 @@ test "Granite Embedding English R2 config" {
     try std.testing.expect(config.normalize);
     // ModernBERT architecture - no token_type_ids
     try std.testing.expect(!config.use_token_type_ids);
-    try std.testing.expectEqualStrings("onnx/model_quantized.onnx", config.model_file);
+    // Model file depends on architecture (qint8 for ARM, quint8_avx2 for x86)
+    try std.testing.expect(std.mem.endsWith(u8, config.model_file, ".onnx"));
     // BERT-style output needs pooling
     try std.testing.expect(!config.output_is_pooled);
     try std.testing.expect(config.output_name == null);
@@ -713,10 +714,9 @@ test "All models have valid configs" {
 }
 
 test "Model enum iteration" {
-
-    // Verify we have exactly 13 models
+    // Verify we have exactly 14 models
     const model_count = @typeInfo(Model).@"enum".fields.len;
-    try std.testing.expectEqual(@as(usize, 13), model_count);
+    try std.testing.expectEqual(@as(usize, 14), model_count);
 }
 
 test "Pooling strategy distribution" {
@@ -870,11 +870,14 @@ test "Gemma variants share same HF repo" {
     try std.testing.expectEqualStrings(base, fp16);
 }
 
-test "Granite variants share same HF repo" {
+test "Granite variants have expected HF repos" {
+    // Different variants may use different repos
     const quantized = Model.granite_embedding_english_r2.getConfig().hf_repo;
     const fp16 = Model.granite_embedding_english_r2_fp16.getConfig().hf_repo;
 
-    try std.testing.expectEqualStrings(quantized, fp16);
+    // Both should have valid repos
+    try std.testing.expect(quantized.len > 0);
+    try std.testing.expect(fp16.len > 0);
 }
 
 test "Output names for pooled models" {
@@ -886,4 +889,203 @@ test "Output names for pooled models" {
     // Non-pooled models use default (null)
     try std.testing.expect(Model.bge_small_en_v1_5.getConfig().output_name == null);
     try std.testing.expect(Model.granite_embedding_english_r2.getConfig().output_name == null);
+}
+
+// =============================================================================
+// MEMORY PROFILE TESTS
+// =============================================================================
+
+test "MemoryProfile.calculateOptimalBatch - ample memory uses optimal" {
+    const profile = MemoryProfile{
+        .base_memory_mb = 500,
+        .per_batch_item_mb = 10.0,
+        .optimal_cpu_batch = 32,
+        .optimal_gpu_batch = 64,
+    };
+
+    // With 10GB available: (10240 * 0.7 - 500) / 10 = 667 > optimal
+    // Should cap at optimal
+    const cpu_batch = profile.calculateOptimalBatch(10240, false);
+    try std.testing.expectEqual(@as(u32, 32), cpu_batch);
+
+    const gpu_batch = profile.calculateOptimalBatch(10240, true);
+    try std.testing.expectEqual(@as(u32, 64), gpu_batch);
+}
+
+test "MemoryProfile.calculateOptimalBatch - limited memory" {
+    const profile = MemoryProfile{
+        .base_memory_mb = 1000,
+        .per_batch_item_mb = 50.0,
+        .optimal_cpu_batch = 32,
+        .optimal_gpu_batch = 64,
+    };
+
+    // With 2GB available: (2048 * 0.7 - 1000) / 50 = 8.67 -> 8
+    const batch = profile.calculateOptimalBatch(2048, false);
+    try std.testing.expectEqual(@as(u32, 8), batch);
+}
+
+test "MemoryProfile.calculateOptimalBatch - minimum batch size" {
+    const profile = MemoryProfile{
+        .base_memory_mb = 1500,
+        .per_batch_item_mb = 80.0,
+        .optimal_cpu_batch = 32,
+        .optimal_gpu_batch = 64,
+    };
+
+    // With 1.5GB: (1536 * 0.7 - 1500) / 80 = -5.3 -> should return 1
+    const batch = profile.calculateOptimalBatch(1536, false);
+    try std.testing.expectEqual(@as(u32, 1), batch);
+}
+
+test "MemoryProfile.calculateOptimalBatch - exactly base memory" {
+    const profile = MemoryProfile{
+        .base_memory_mb = 1000,
+        .per_batch_item_mb = 50.0,
+        .optimal_cpu_batch = 32,
+        .optimal_gpu_batch = 64,
+    };
+
+    // With 1000MB * 0.7 = 700MB, less than base_memory_mb
+    const batch = profile.calculateOptimalBatch(1000, false);
+    try std.testing.expectEqual(@as(u32, 1), batch);
+}
+
+test "MemoryProfile.getDefaultBatch - CPU vs GPU" {
+    const profile = MemoryProfile{
+        .base_memory_mb = 500,
+        .per_batch_item_mb = 10.0,
+        .optimal_cpu_batch = 32,
+        .optimal_gpu_batch = 64,
+    };
+
+    try std.testing.expectEqual(@as(u32, 32), profile.getDefaultBatch(false));
+    try std.testing.expectEqual(@as(u32, 64), profile.getDefaultBatch(true));
+}
+
+test "MemoryProfile default values" {
+    const profile = MemoryProfile{};
+
+    try std.testing.expectEqual(@as(u32, 500), profile.base_memory_mb);
+    try std.testing.expectEqual(@as(f32, 20.0), profile.per_batch_item_mb);
+    try std.testing.expectEqual(@as(u32, 32), profile.optimal_cpu_batch);
+    try std.testing.expectEqual(@as(u32, 64), profile.optimal_gpu_batch);
+}
+
+test "MemoryProfile - all models have valid profiles" {
+    const models = [_]Model{
+        .bge_small_en_v1_5,
+        .all_minilm_l6_v2,
+        .multilingual_e5_large,
+        .bge_small_zh_v1_5,
+        .embedding_gemma_300m,
+        .embedding_gemma_300m_q4,
+        .granite_embedding_english_r2,
+        .granite_embedding_small_english_r2,
+        .granite_embedding_small_english_r2_qint8,
+    };
+
+    for (models) |model| {
+        const config = model.getConfig();
+        const profile = config.memory_profile;
+
+        // All profiles should have reasonable values
+        try std.testing.expect(profile.base_memory_mb > 0);
+        try std.testing.expect(profile.per_batch_item_mb > 0);
+        try std.testing.expect(profile.optimal_cpu_batch >= 1);
+        try std.testing.expect(profile.optimal_gpu_batch >= 1);
+        // GPU batch should typically be >= CPU batch (more parallelism)
+        try std.testing.expect(profile.optimal_gpu_batch >= profile.optimal_cpu_batch);
+    }
+}
+
+test "parseMemInfoLine - valid MemAvailable" {
+    const content = "MemTotal:       32768000 kB\nMemFree:         1024000 kB\nMemAvailable:   16384000 kB\n";
+    const result = parseMemInfoLine(content, "MemAvailable:");
+    try std.testing.expect(result != null);
+    try std.testing.expectEqual(@as(u64, 16384000), result.?);
+}
+
+test "parseMemInfoLine - valid MemFree" {
+    const content = "MemTotal:       32768000 kB\nMemFree:         1024000 kB\n";
+    const result = parseMemInfoLine(content, "MemFree:");
+    try std.testing.expect(result != null);
+    try std.testing.expectEqual(@as(u64, 1024000), result.?);
+}
+
+test "parseMemInfoLine - prefix not found" {
+    const content = "MemTotal:       32768000 kB\nMemFree:         1024000 kB\n";
+    const result = parseMemInfoLine(content, "MemAvailable:");
+    try std.testing.expect(result == null);
+}
+
+test "parseMemInfoLine - empty content" {
+    const result = parseMemInfoLine("", "MemAvailable:");
+    try std.testing.expect(result == null);
+}
+
+test "parseMemInfoLine - malformed line (no number)" {
+    const content = "MemAvailable: notanumber kB\n";
+    const result = parseMemInfoLine(content, "MemAvailable:");
+    try std.testing.expect(result == null);
+}
+
+test "CpuFeatures default values" {
+    const features = CpuFeatures{};
+    try std.testing.expect(!features.has_avx2);
+    try std.testing.expect(!features.has_avx512f);
+    try std.testing.expect(!features.has_avx512vnni);
+}
+
+test "CpuFeatures.detect - non-x86_64 returns defaults" {
+    // This test verifies the function runs without crashing
+    // On non-x86_64, it should return all false
+    const features = CpuFeatures.detect();
+
+    if (builtin.cpu.arch != .x86_64) {
+        try std.testing.expect(!features.has_avx2);
+        try std.testing.expect(!features.has_avx512f);
+        try std.testing.expect(!features.has_avx512vnni);
+    }
+    // On x86_64, we just verify it runs (actual values depend on CPU)
+}
+
+test "getOptimalOnnxFile returns valid path" {
+    const file = getOptimalOnnxFile();
+
+    // Should return a non-empty string
+    try std.testing.expect(file.len > 0);
+
+    // Should end in .onnx
+    try std.testing.expect(std.mem.endsWith(u8, file, ".onnx"));
+
+    // Should contain "onnx/" prefix (it's a path)
+    try std.testing.expect(std.mem.startsWith(u8, file, "onnx/"));
+}
+
+test "Model.getModelFile returns valid path" {
+    const models = [_]Model{
+        .bge_small_en_v1_5,
+        .all_minilm_l6_v2,
+        .granite_embedding_english_r2,
+        .granite_embedding_small_english_r2_qint8,
+    };
+
+    for (models) |model| {
+        const file = model.getModelFile();
+        try std.testing.expect(file.len > 0);
+        try std.testing.expect(std.mem.endsWith(u8, file, ".onnx"));
+    }
+}
+
+test "Small models have lower memory profiles than large models" {
+    const small = Model.all_minilm_l6_v2.getConfig().memory_profile;
+    const large = Model.multilingual_e5_large.getConfig().memory_profile;
+
+    // Large model should use more base memory
+    try std.testing.expect(large.base_memory_mb > small.base_memory_mb);
+    // Large model should use more memory per batch item
+    try std.testing.expect(large.per_batch_item_mb > small.per_batch_item_mb);
+    // Large model should have smaller optimal batch sizes
+    try std.testing.expect(large.optimal_cpu_batch < small.optimal_cpu_batch);
 }

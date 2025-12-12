@@ -20,6 +20,9 @@ pub fn build(b: *std.Build) void {
     // When dynamic_ort is enabled, CUDA is automatically detected at runtime
     const cuda_enabled = b.option(bool, "cuda", "Enable CUDA execution provider") orelse false;
 
+    // Build option for test coverage (emit DWARF debug info for kcov)
+    const coverage = b.option(bool, "coverage", "Emit debug info for code coverage (use with kcov)") orelse false;
+
     // Create build options module
     const build_options = b.addOptions();
     build_options.addOption(bool, "coreml_enabled", coreml_enabled);
@@ -164,6 +167,35 @@ pub fn build(b: *std.Build) void {
 
     const test_step = b.step("test", "Run all tests");
     test_step.dependOn(&run_lib_tests.step);
+
+    // Coverage: disable stripping for kcov
+    if (coverage) {
+        lib_tests.root_module.strip = false;
+    }
+
+    // -------------------------------------------------------------------------
+    // Integration Tests (requires models)
+    // -------------------------------------------------------------------------
+    const integration_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("test/integration/embed_integration_test.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "fastembed", .module = fastembed_mod },
+            },
+        }),
+    });
+    ort_config.configure(integration_tests.root_module);
+
+    if (coverage) {
+        integration_tests.root_module.strip = false;
+    }
+
+    const run_integration_tests = b.addRunArtifact(integration_tests);
+
+    const integration_step = b.step("test-integration", "Run integration tests (requires models)");
+    integration_step.dependOn(&run_integration_tests.step);
 
     // -------------------------------------------------------------------------
     // Example: Basic Tokenization

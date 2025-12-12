@@ -345,3 +345,147 @@ test "RerankerOptions default values" {
     try std.testing.expect(opts.model_path == null);
     try std.testing.expectEqual(@as(usize, 0), opts.max_seq_len);
 }
+
+// =============================================================================
+// COMPREHENSIVE TESTS
+// =============================================================================
+
+test "RerankerError enum" {
+    const errors = [_]RerankerError{
+        RerankerError.TokenizerError,
+        RerankerError.ModelError,
+        RerankerError.InferenceError,
+        RerankerError.InvalidInput,
+        RerankerError.OutOfMemory,
+    };
+
+    try std.testing.expectEqual(@as(usize, 5), errors.len);
+}
+
+test "Reranker.init fails without model_path" {
+    const allocator = std.testing.allocator;
+
+    const result = Reranker.init(allocator, .{
+        .model = .granite_reranker_english_r2,
+        .model_path = null,
+    });
+
+    try std.testing.expectError(RerankerError.ModelError, result);
+}
+
+test "Reranker.init fails with nonexistent path" {
+    const allocator = std.testing.allocator;
+
+    const result = Reranker.init(allocator, .{
+        .model = .granite_reranker_english_r2,
+        .model_path = "/nonexistent/path/to/model",
+    });
+
+    // Could be TokenizerError or ModelError depending on what fails first
+    try std.testing.expect(result == RerankerError.TokenizerError or result == RerankerError.ModelError);
+}
+
+test "RerankerOptions thread configuration" {
+    const opts = RerankerOptions{
+        .intra_op_num_threads = 4,
+        .inter_op_num_threads = 2,
+    };
+
+    try std.testing.expectEqual(@as(u32, 4), opts.intra_op_num_threads);
+    try std.testing.expectEqual(@as(u32, 2), opts.inter_op_num_threads);
+}
+
+test "RerankerOptions all fields" {
+    const opts = RerankerOptions{
+        .model = .granite_reranker_english_r2_o4,
+        .model_path = "/path/to/model",
+        .max_seq_len = 4096,
+        .execution_provider = .{ .cpu = {} },
+        .intra_op_num_threads = 8,
+        .inter_op_num_threads = 4,
+    };
+
+    try std.testing.expectEqual(RerankerModel.granite_reranker_english_r2_o4, opts.model);
+    try std.testing.expectEqualStrings("/path/to/model", opts.model_path.?);
+    try std.testing.expectEqual(@as(usize, 4096), opts.max_seq_len);
+    try std.testing.expectEqual(@as(u32, 8), opts.intra_op_num_threads);
+    try std.testing.expectEqual(@as(u32, 4), opts.inter_op_num_threads);
+}
+
+test "RerankerConfig struct" {
+    const config = RerankerConfig{
+        .model_file = "test.onnx",
+        .hidden_dim = 768,
+        .max_seq_len = 8192,
+        .num_labels = 1,
+    };
+
+    try std.testing.expectEqualStrings("test.onnx", config.model_file);
+    try std.testing.expectEqual(@as(usize, 768), config.hidden_dim);
+    try std.testing.expectEqual(@as(usize, 8192), config.max_seq_len);
+    try std.testing.expectEqual(@as(usize, 1), config.num_labels);
+}
+
+test "RerankerModel.getConfig - CPU model" {
+    const config = RerankerModel.granite_reranker_english_r2.getConfig();
+
+    try std.testing.expectEqual(@as(usize, 768), config.hidden_dim);
+    try std.testing.expectEqual(@as(usize, 8192), config.max_seq_len);
+    try std.testing.expectEqual(@as(usize, 1), config.num_labels);
+    // Model file depends on architecture
+    try std.testing.expect(std.mem.endsWith(u8, config.model_file, ".onnx"));
+}
+
+test "RerankerModel.getConfig - O4 CUDA model" {
+    const config = RerankerModel.granite_reranker_english_r2_o4.getConfig();
+
+    try std.testing.expectEqual(@as(usize, 768), config.hidden_dim);
+    try std.testing.expectEqual(@as(usize, 8192), config.max_seq_len);
+    try std.testing.expectEqual(@as(usize, 1), config.num_labels);
+    try std.testing.expectEqualStrings("onnx/model_f16_cuda.onnx", config.model_file);
+}
+
+test "RerankerModel.getModelFile returns valid path" {
+    const models = [_]RerankerModel{
+        .granite_reranker_english_r2,
+        .granite_reranker_english_r2_o4,
+    };
+
+    for (models) |model| {
+        const file = model.getModelFile();
+        try std.testing.expect(file.len > 0);
+        try std.testing.expect(std.mem.endsWith(u8, file, ".onnx"));
+    }
+}
+
+test "RerankerModel.getModelFile - O4 returns CUDA file" {
+    const file = RerankerModel.granite_reranker_english_r2_o4.getModelFile();
+    try std.testing.expectEqualStrings("onnx/model_f16_cuda.onnx", file);
+}
+
+test "Reranker struct has expected fields" {
+    try std.testing.expect(@hasField(Reranker, "allocator"));
+    try std.testing.expect(@hasField(Reranker, "tokenizer"));
+    try std.testing.expect(@hasField(Reranker, "session"));
+    try std.testing.expect(@hasField(Reranker, "env"));
+    try std.testing.expect(@hasField(Reranker, "config"));
+    try std.testing.expect(@hasField(Reranker, "max_seq_len"));
+}
+
+test "Reranker struct size is reasonable" {
+    const size = @sizeOf(Reranker);
+    try std.testing.expect(size > 0);
+    try std.testing.expect(size < 4096);
+}
+
+test "RerankerModel enum count" {
+    const model_count = @typeInfo(RerankerModel).@"enum".fields.len;
+    try std.testing.expectEqual(@as(usize, 2), model_count);
+}
+
+test "getOptimalRerankerOnnxFile returns valid path" {
+    const file = getOptimalRerankerOnnxFile();
+    try std.testing.expect(file.len > 0);
+    try std.testing.expect(std.mem.endsWith(u8, file, ".onnx"));
+    try std.testing.expect(std.mem.startsWith(u8, file, "onnx/"));
+}

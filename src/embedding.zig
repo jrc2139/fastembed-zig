@@ -516,3 +516,115 @@ test "Embedder has expected fields" {
     try std.testing.expect(@hasField(Embedder, "max_seq_len"));
     try std.testing.expect(@hasField(Embedder, "do_normalize"));
 }
+
+test "Embedder.init fails without model_path" {
+    const allocator = std.testing.allocator;
+
+    // init without model_path should return ModelError
+    const result = Embedder.init(allocator, .{
+        .model = .bge_small_en_v1_5,
+        .model_path = null,
+    });
+
+    try std.testing.expectError(EmbedderError.ModelError, result);
+}
+
+test "Embedder.init fails with nonexistent path" {
+    const allocator = std.testing.allocator;
+
+    // init with nonexistent path should return TokenizerError (can't load tokenizer.json)
+    const result = Embedder.init(allocator, .{
+        .model = .bge_small_en_v1_5,
+        .model_path = "/nonexistent/path/to/model",
+    });
+
+    // Could be TokenizerError or ModelError depending on what fails first
+    try std.testing.expect(result == EmbedderError.TokenizerError or result == EmbedderError.ModelError);
+}
+
+test "EmbedderOptions thread configuration" {
+    const opts = EmbedderOptions{
+        .intra_op_num_threads = 4,
+        .inter_op_num_threads = 2,
+    };
+
+    try std.testing.expectEqual(@as(u32, 4), opts.intra_op_num_threads);
+    try std.testing.expectEqual(@as(u32, 2), opts.inter_op_num_threads);
+}
+
+test "EmbedderOptions thread configuration defaults" {
+    const opts = EmbedderOptions{};
+
+    // 0 means use ONNX Runtime defaults
+    try std.testing.expectEqual(@as(u32, 0), opts.intra_op_num_threads);
+    try std.testing.expectEqual(@as(u32, 0), opts.inter_op_num_threads);
+}
+
+test "EmbedderOptions all fields" {
+    // Test that all option fields can be set together
+    const opts = EmbedderOptions{
+        .model = .all_minilm_l6_v2,
+        .model_path = "/path/to/model",
+        .max_seq_len = 128,
+        .normalize = true,
+        .execution_provider = .{ .cpu = {} },
+        .intra_op_num_threads = 8,
+        .inter_op_num_threads = 4,
+    };
+
+    try std.testing.expectEqual(models.Model.all_minilm_l6_v2, opts.model);
+    try std.testing.expectEqualStrings("/path/to/model", opts.model_path.?);
+    try std.testing.expectEqual(@as(usize, 128), opts.max_seq_len);
+    try std.testing.expectEqual(true, opts.normalize.?);
+    try std.testing.expectEqual(@as(u32, 8), opts.intra_op_num_threads);
+    try std.testing.expectEqual(@as(u32, 4), opts.inter_op_num_threads);
+}
+
+test "Model config integration - BGE uses CLS pooling" {
+    const config = models.Model.bge_small_en_v1_5.getConfig();
+    try std.testing.expectEqual(pooling.PoolingStrategy.cls, config.pooling);
+}
+
+test "Model config integration - MiniLM uses mean pooling" {
+    const config = models.Model.all_minilm_l6_v2.getConfig();
+    try std.testing.expectEqual(pooling.PoolingStrategy.mean, config.pooling);
+}
+
+test "Model config integration - Granite uses mean pooling" {
+    const config = models.Model.granite_embedding_english_r2.getConfig();
+    try std.testing.expectEqual(pooling.PoolingStrategy.mean, config.pooling);
+}
+
+test "Model config integration - Gemma output is pre-pooled" {
+    const config = models.Model.embedding_gemma_300m.getConfig();
+    try std.testing.expect(config.output_is_pooled);
+    try std.testing.expectEqualStrings("sentence_embedding", config.output_name.?);
+}
+
+test "Model config integration - non-Gemma models need pooling" {
+    const non_gemma_models = [_]models.Model{
+        .bge_small_en_v1_5,
+        .all_minilm_l6_v2,
+        .multilingual_e5_large,
+        .granite_embedding_english_r2,
+    };
+
+    for (non_gemma_models) |model| {
+        const config = model.getConfig();
+        try std.testing.expect(!config.output_is_pooled);
+    }
+}
+
+test "Model hidden dimensions match expected values" {
+    // 384-dim models (small)
+    try std.testing.expectEqual(@as(usize, 384), models.Model.bge_small_en_v1_5.getConfig().hidden_dim);
+    try std.testing.expectEqual(@as(usize, 384), models.Model.all_minilm_l6_v2.getConfig().hidden_dim);
+    try std.testing.expectEqual(@as(usize, 384), models.Model.granite_embedding_small_english_r2.getConfig().hidden_dim);
+
+    // 768-dim models (base)
+    try std.testing.expectEqual(@as(usize, 768), models.Model.embedding_gemma_300m.getConfig().hidden_dim);
+    try std.testing.expectEqual(@as(usize, 768), models.Model.granite_embedding_english_r2.getConfig().hidden_dim);
+
+    // 1024-dim models (large)
+    try std.testing.expectEqual(@as(usize, 1024), models.Model.multilingual_e5_large.getConfig().hidden_dim);
+}

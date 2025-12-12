@@ -175,3 +175,69 @@ pub const Tokenizer = struct {
 test "Tokenizer struct is defined" {
     try std.testing.expect(@sizeOf(Tokenizer) > 0);
 }
+
+// =============================================================================
+// COMPREHENSIVE TESTS
+// =============================================================================
+
+test "TokenizerError enum" {
+    const errors = [_]TokenizerError{
+        TokenizerError.InvalidJson,
+        TokenizerError.InvalidHandle,
+        TokenizerError.OutOfMemory,
+        TokenizerError.FileError,
+        TokenizerError.TokenizationError,
+        TokenizerError.DecodingError,
+    };
+
+    try std.testing.expectEqual(@as(usize, 6), errors.len);
+}
+
+test "Tokenizer.fromFile - file not found" {
+    const allocator = std.testing.allocator;
+
+    const result = Tokenizer.fromFile(allocator, "/nonexistent/path/tokenizer.json");
+    try std.testing.expectError(TokenizerError.FileError, result);
+}
+
+test "Tokenizer.fromFile - directory instead of file" {
+    const allocator = std.testing.allocator;
+
+    // Try to open a directory as if it were a file
+    const result = Tokenizer.fromFile(allocator, "/tmp");
+    // Should fail with FileError (IsDir)
+    try std.testing.expectError(TokenizerError.FileError, result);
+}
+
+test "Tokenizer.fromJson - invalid JSON" {
+    const allocator = std.testing.allocator;
+
+    const result = Tokenizer.fromJson(allocator, "not valid json at all");
+    try std.testing.expectError(TokenizerError.InvalidJson, result);
+}
+
+test "Tokenizer.fromJson - empty JSON" {
+    const allocator = std.testing.allocator;
+
+    const result = Tokenizer.fromJson(allocator, "");
+    try std.testing.expectError(TokenizerError.InvalidJson, result);
+}
+
+test "Tokenizer.fromJson - valid JSON but wrong format" {
+    const allocator = std.testing.allocator;
+
+    // Valid JSON but not a tokenizer config
+    const result = Tokenizer.fromJson(allocator, "{}");
+    try std.testing.expectError(TokenizerError.InvalidJson, result);
+}
+
+test "Tokenizer struct has expected fields" {
+    try std.testing.expect(@hasField(Tokenizer, "allocator"));
+    try std.testing.expect(@hasField(Tokenizer, "inner"));
+}
+
+test "Tokenizer struct size is reasonable" {
+    const size = @sizeOf(Tokenizer);
+    try std.testing.expect(size > 0);
+    try std.testing.expect(size < 4096);
+}

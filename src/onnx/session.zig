@@ -492,3 +492,24 @@ test "Session struct size is reasonable" {
     // Session should be reasonable size (contains ArrayLists, allocator, etc.)
     try std.testing.expect(size < 4096);
 }
+
+test "Session.InitOptions thread configuration" {
+    const opts = Session.InitOptions{
+        .intra_op_num_threads = 4,
+        .inter_op_num_threads = 2,
+    };
+
+    try std.testing.expectEqual(@as(u32, 4), opts.intra_op_num_threads);
+    try std.testing.expectEqual(@as(u32, 2), opts.inter_op_num_threads);
+}
+
+test "Session.InitOptions all fields" {
+    const opts = Session.InitOptions{
+        .execution_provider = .{ .cpu = {} },
+        .intra_op_num_threads = 8,
+        .inter_op_num_threads = 4,
+    };
+
+    try std.testing.expectEqual(@as(u32, 8), opts.intra_op_num_threads);
+    try std.testing.expectEqual(@as(u32, 4), opts.inter_op_num_threads);
+}

@@ -320,3 +320,30 @@ test "Dot product - self dot product equals squared norm" {
 
     try std.testing.expectApproxEqAbs(dot, norm * norm, 0.001);
 }
+
+test "Cosine similarity - self similarity equals 1.0" {
+    const v = [_]f32{ 1.0, 2.0, 3.0, 4.0 };
+    try std.testing.expectApproxEqAbs(@as(f32, 1.0), cosineSimilarity(&v, &v), 0.0001);
+}
+
+test "L2 normalize - handles infinity gracefully" {
+    var vec = [_]f32{ std.math.inf(f32), 1.0 };
+    l2Normalize(&vec);
+    // With inf in input, norm_sq will be inf, so norm is inf
+    // Division by inf gives 0 for finite values, and inf/inf is NaN
+    // This documents current behavior (vectors with inf are not well-defined)
+    try std.testing.expect(std.math.isNan(vec[0]) or vec[0] == 0 or vec[0] == 1);
+}
+
+test "L2 normalize - handles NaN gracefully" {
+    var vec = [_]f32{ std.math.nan(f32), 1.0 };
+    l2Normalize(&vec);
+    // NaN propagates through calculations - this documents current behavior
+    // NaN in vector makes norm_sq NaN, which propagates
+    try std.testing.expect(std.math.isNan(vec[0]));
+}
+
+test "L2 norm - zero vector returns 0" {
+    const zero = [_]f32{ 0.0, 0.0, 0.0 };
+    try std.testing.expectApproxEqAbs(@as(f32, 0.0), l2Norm(&zero), 0.0001);
+}
