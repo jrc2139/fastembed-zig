@@ -1,4 +1,5 @@
 const std = @import("std");
+const deps = @import("deps.zig");
 
 pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
@@ -30,30 +31,12 @@ pub fn build(b: *std.Build) void {
     build_options.addOption(bool, "dynamic_ort", dynamic_ort);
 
     // -------------------------------------------------------------------------
-    // Dependencies
+    // Dependencies (from zigmod deps.zig)
     // -------------------------------------------------------------------------
 
-    // Tokenizer dependency - find via path (zigmod manages the actual fetching)
-    // When root project: .zigmod/deps/git/github.com/jrc2139/tokenizer-zig
-    // When used as dep:  ../tokenizer-zig (sibling in flattened structure)
-    const tokenizer_paths = [_][]const u8{
-        "../tokenizer-zig", // sibling (when used as dependency)
-        ".zigmod/deps/git/github.com/jrc2139/tokenizer-zig", // nested (when root)
-    };
-
-    const tokenizer_path: []const u8 = blk: {
-        for (tokenizer_paths) |path| {
-            const full_path = b.pathFromRoot(path);
-            if (std.fs.cwd().statFile(b.fmt("{s}/build.zig.zon", .{full_path}))) |_| {
-                break :blk path;
-            } else |_| {}
-        }
-        @panic("tokenizer-zig not found. Run 'zigmod fetch' first.");
-    };
-
-    // Create module directly from source path (bypasses build.zig.zon)
-    const tokenizer_mod = b.addModule("tokenizer", .{
-        .root_source_file = b.path(b.fmt("{s}/src/lib.zig", .{tokenizer_path})),
+    // Get tokenizer module from deps.zig (zigmod handles the path resolution)
+    const tokenizer_mod = b.createModule(.{
+        .root_source_file = deps.pkgs.tokenizer.import.?[1],
         .target = target,
         .optimize = optimize,
     });
