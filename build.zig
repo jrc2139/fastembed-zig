@@ -35,8 +35,9 @@ pub fn build(b: *std.Build) void {
     // -------------------------------------------------------------------------
 
     // Get tokenizer module from deps.zig (zigmod handles the path resolution)
+    // Use the package_data structure - tokenizer is _scqblt0nmsfe
     const tokenizer_mod = b.createModule(.{
-        .root_source_file = deps.pkgs.tokenizer.import.?[1],
+        .root_source_file = deps.package_data._scqblt0nmsfe.import.?[1],
         .target = target,
         .optimize = optimize,
     });
