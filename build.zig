@@ -33,12 +33,30 @@ pub fn build(b: *std.Build) void {
     // Dependencies
     // -------------------------------------------------------------------------
 
-    // Tokenizer dependency (pure Zig - no more C library!)
-    const tokenizer_dep = b.dependency("tokenizer", .{
+    // Tokenizer dependency - find via path (zigmod manages the actual fetching)
+    // When root project: .zigmod/deps/git/github.com/jrc2139/tokenizer-zig
+    // When used as dep:  ../tokenizer-zig (sibling in flattened structure)
+    const tokenizer_paths = [_][]const u8{
+        "../tokenizer-zig", // sibling (when used as dependency)
+        ".zigmod/deps/git/github.com/jrc2139/tokenizer-zig", // nested (when root)
+    };
+
+    const tokenizer_path: []const u8 = blk: {
+        for (tokenizer_paths) |path| {
+            const full_path = b.pathFromRoot(path);
+            if (std.fs.cwd().statFile(b.fmt("{s}/build.zig.zon", .{full_path}))) |_| {
+                break :blk path;
+            } else |_| {}
+        }
+        @panic("tokenizer-zig not found. Run 'zigmod fetch' first.");
+    };
+
+    // Create module directly from source path (bypasses build.zig.zon)
+    const tokenizer_mod = b.addModule("tokenizer", .{
+        .root_source_file = b.path(b.fmt("{s}/src/lib.zig", .{tokenizer_path})),
         .target = target,
         .optimize = optimize,
     });
-    const tokenizer_mod = tokenizer_dep.module("tokenizer");
 
     // ONNX Runtime paths
     // For CUDA builds, use ~/.osgrep/onnxruntime-cuda/{include,lib}

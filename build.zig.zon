@@ -9,9 +9,6 @@
         "src",
         "examples",
     },
-    .dependencies = .{
-        .tokenizer = .{
-            .path = ".zigmod/deps/git/github.com/jrc2139/tokenizer-zig",
-        },
-    },
+    // Dependencies managed by zigmod - keep empty to avoid conflicts
+    .dependencies = .{},
 }
