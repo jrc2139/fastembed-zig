@@ -11,6 +11,7 @@ permissions:
 
 env:
   ORT_VERSION: "1.23.2"
+  CACHE_VERSION: "v2"  # Bump to bust stale caches
 
 jobs:
   # =============================================================================
@@ -60,20 +61,29 @@ jobs:
         uses: actions/cache@v4
         with:
           path: deps/onnxruntime
-          key: ${{ matrix.ort_artifact }}-${{ env.ORT_VERSION }}
+          key: ${{ matrix.ort_artifact }}-${{ env.ORT_VERSION }}-${{ env.CACHE_VERSION }}
 
       - name: Download ONNX Runtime
         run: |
+          echo "Checking for ONNX Runtime..."
+          echo "Cache hit: ${{ steps.cache-ort.outputs.cache-hit }}"
+          ls -la deps/onnxruntime/ 2>/dev/null || echo "deps/onnxruntime does not exist"
+          ls -la deps/onnxruntime/lib/ 2>/dev/null || echo "deps/onnxruntime/lib does not exist"
+
           if [ ! -f "deps/onnxruntime/lib/libonnxruntime.so" ] && [ ! -f "deps/onnxruntime/lib/libonnxruntime.dylib" ]; then
-            echo "Downloading ONNX Runtime..."
+            echo "Downloading ONNX Runtime ${{ matrix.ort_artifact }}-${{ env.ORT_VERSION }}..."
+            rm -rf deps/onnxruntime
             mkdir -p deps/onnxruntime
-            curl -L -o ort.tgz "https://github.com/microsoft/onnxruntime/releases/download/v${{ env.ORT_VERSION }}/${{ matrix.ort_artifact }}-${{ env.ORT_VERSION }}.tgz"
+            curl -fL -o ort.tgz "https://github.com/microsoft/onnxruntime/releases/download/v${{ env.ORT_VERSION }}/${{ matrix.ort_artifact }}-${{ env.ORT_VERSION }}.tgz"
             tar -xzf ort.tgz --strip-components=1 -C deps/onnxruntime
             rm -f ort.tgz
+            echo "Download complete. Contents:"
+            ls -la deps/onnxruntime/
+            ls -la deps/onnxruntime/lib/
           else
             echo "ONNX Runtime already present"
+            ls -la deps/onnxruntime/lib/
           fi
-          ls -la deps/onnxruntime/lib/ || echo "lib dir not found"
 
       - name: Setup library paths (Linux)
         if: runner.os == 'Linux'
@@ -132,17 +142,19 @@ jobs:
         uses: actions/cache@v4
         with:
           path: deps/onnxruntime
-          key: onnxruntime-linux-x64-${{ env.ORT_VERSION }}
+          key: onnxruntime-linux-x64-${{ env.ORT_VERSION }}-${{ env.CACHE_VERSION }}
 
       - name: Download ONNX Runtime
         run: |
           if [ ! -f "deps/onnxruntime/lib/libonnxruntime.so" ]; then
             echo "Downloading ONNX Runtime..."
+            rm -rf deps/onnxruntime
             mkdir -p deps/onnxruntime
-            curl -L -o ort.tgz "https://github.com/microsoft/onnxruntime/releases/download/v${{ env.ORT_VERSION }}/onnxruntime-linux-x64-${{ env.ORT_VERSION }}.tgz"
+            curl -fL -o ort.tgz "https://github.com/microsoft/onnxruntime/releases/download/v${{ env.ORT_VERSION }}/onnxruntime-linux-x64-${{ env.ORT_VERSION }}.tgz"
             tar -xzf ort.tgz --strip-components=1 -C deps/onnxruntime
             rm -f ort.tgz
           fi
+          ls -la deps/onnxruntime/lib/
 
       - name: Setup library paths
         run: |
@@ -189,17 +201,19 @@ jobs:
         uses: actions/cache@v4
         with:
           path: deps/onnxruntime
-          key: onnxruntime-osx-arm64-${{ env.ORT_VERSION }}
+          key: onnxruntime-osx-arm64-${{ env.ORT_VERSION }}-${{ env.CACHE_VERSION }}
 
       - name: Download ONNX Runtime
         run: |
           if [ ! -f "deps/onnxruntime/lib/libonnxruntime.dylib" ]; then
             echo "Downloading ONNX Runtime..."
+            rm -rf deps/onnxruntime
             mkdir -p deps/onnxruntime
-            curl -L -o ort.tgz "https://github.com/microsoft/onnxruntime/releases/download/v${{ env.ORT_VERSION }}/onnxruntime-osx-arm64-${{ env.ORT_VERSION }}.tgz"
+            curl -fL -o ort.tgz "https://github.com/microsoft/onnxruntime/releases/download/v${{ env.ORT_VERSION }}/onnxruntime-osx-arm64-${{ env.ORT_VERSION }}.tgz"
             tar -xzf ort.tgz --strip-components=1 -C deps/onnxruntime
             rm -f ort.tgz
           fi
+          ls -la deps/onnxruntime/lib/
 
       - name: Setup library paths
         run: |
@@ -237,17 +251,19 @@ jobs:
         uses: actions/cache@v4
         with:
           path: deps/onnxruntime
-          key: onnxruntime-linux-x64-${{ env.ORT_VERSION }}
+          key: onnxruntime-linux-x64-${{ env.ORT_VERSION }}-${{ env.CACHE_VERSION }}
 
       - name: Download ONNX Runtime
         run: |
           if [ ! -f "deps/onnxruntime/lib/libonnxruntime.so" ]; then
             echo "Downloading ONNX Runtime..."
+            rm -rf deps/onnxruntime
             mkdir -p deps/onnxruntime
-            curl -L -o ort.tgz "https://github.com/microsoft/onnxruntime/releases/download/v${{ env.ORT_VERSION }}/onnxruntime-linux-x64-${{ env.ORT_VERSION }}.tgz"
+            curl -fL -o ort.tgz "https://github.com/microsoft/onnxruntime/releases/download/v${{ env.ORT_VERSION }}/onnxruntime-linux-x64-${{ env.ORT_VERSION }}.tgz"
             tar -xzf ort.tgz --strip-components=1 -C deps/onnxruntime
             rm -f ort.tgz
           fi
+          ls -la deps/onnxruntime/lib/
 
       - name: Cache test model
         id: cache-model
