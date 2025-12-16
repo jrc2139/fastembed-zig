@@ -63,12 +63,17 @@ jobs:
           key: ${{ matrix.ort_artifact }}-${{ env.ORT_VERSION }}
 
       - name: Download ONNX Runtime
-        if: steps.cache-ort.outputs.cache-hit != 'true'
         run: |
-          mkdir -p deps/onnxruntime
-          curl -L -o ort.tgz "https://github.com/microsoft/onnxruntime/releases/download/v${{ env.ORT_VERSION }}/${{ matrix.ort_artifact }}-${{ env.ORT_VERSION }}.tgz"
-          tar -xzf ort.tgz --strip-components=1 -C deps/onnxruntime
-          rm -f ort.tgz
+          if [ ! -f "deps/onnxruntime/lib/libonnxruntime.so" ] && [ ! -f "deps/onnxruntime/lib/libonnxruntime.dylib" ]; then
+            echo "Downloading ONNX Runtime..."
+            mkdir -p deps/onnxruntime
+            curl -L -o ort.tgz "https://github.com/microsoft/onnxruntime/releases/download/v${{ env.ORT_VERSION }}/${{ matrix.ort_artifact }}-${{ env.ORT_VERSION }}.tgz"
+            tar -xzf ort.tgz --strip-components=1 -C deps/onnxruntime
+            rm -f ort.tgz
+          else
+            echo "ONNX Runtime already present"
+          fi
+          ls -la deps/onnxruntime/lib/ || echo "lib dir not found"
 
       - name: Setup library paths (Linux)
         if: runner.os == 'Linux'
@@ -130,12 +135,14 @@ jobs:
           key: onnxruntime-linux-x64-${{ env.ORT_VERSION }}
 
       - name: Download ONNX Runtime
-        if: steps.cache-ort.outputs.cache-hit != 'true'
         run: |
-          mkdir -p deps/onnxruntime
-          curl -L -o ort.tgz "https://github.com/microsoft/onnxruntime/releases/download/v${{ env.ORT_VERSION }}/onnxruntime-linux-x64-${{ env.ORT_VERSION }}.tgz"
-          tar -xzf ort.tgz --strip-components=1 -C deps/onnxruntime
-          rm -f ort.tgz
+          if [ ! -f "deps/onnxruntime/lib/libonnxruntime.so" ]; then
+            echo "Downloading ONNX Runtime..."
+            mkdir -p deps/onnxruntime
+            curl -L -o ort.tgz "https://github.com/microsoft/onnxruntime/releases/download/v${{ env.ORT_VERSION }}/onnxruntime-linux-x64-${{ env.ORT_VERSION }}.tgz"
+            tar -xzf ort.tgz --strip-components=1 -C deps/onnxruntime
+            rm -f ort.tgz
+          fi
 
       - name: Setup library paths
         run: |
@@ -185,12 +192,14 @@ jobs:
           key: onnxruntime-osx-arm64-${{ env.ORT_VERSION }}
 
       - name: Download ONNX Runtime
-        if: steps.cache-ort.outputs.cache-hit != 'true'
         run: |
-          mkdir -p deps/onnxruntime
-          curl -L -o ort.tgz "https://github.com/microsoft/onnxruntime/releases/download/v${{ env.ORT_VERSION }}/onnxruntime-osx-arm64-${{ env.ORT_VERSION }}.tgz"
-          tar -xzf ort.tgz --strip-components=1 -C deps/onnxruntime
-          rm -f ort.tgz
+          if [ ! -f "deps/onnxruntime/lib/libonnxruntime.dylib" ]; then
+            echo "Downloading ONNX Runtime..."
+            mkdir -p deps/onnxruntime
+            curl -L -o ort.tgz "https://github.com/microsoft/onnxruntime/releases/download/v${{ env.ORT_VERSION }}/onnxruntime-osx-arm64-${{ env.ORT_VERSION }}.tgz"
+            tar -xzf ort.tgz --strip-components=1 -C deps/onnxruntime
+            rm -f ort.tgz
+          fi
 
       - name: Setup library paths
         run: |
@@ -231,12 +240,14 @@ jobs:
           key: onnxruntime-linux-x64-${{ env.ORT_VERSION }}
 
       - name: Download ONNX Runtime
-        if: steps.cache-ort.outputs.cache-hit != 'true'
         run: |
-          mkdir -p deps/onnxruntime
-          curl -L -o ort.tgz "https://github.com/microsoft/onnxruntime/releases/download/v${{ env.ORT_VERSION }}/onnxruntime-linux-x64-${{ env.ORT_VERSION }}.tgz"
-          tar -xzf ort.tgz --strip-components=1 -C deps/onnxruntime
-          rm -f ort.tgz
+          if [ ! -f "deps/onnxruntime/lib/libonnxruntime.so" ]; then
+            echo "Downloading ONNX Runtime..."
+            mkdir -p deps/onnxruntime
+            curl -L -o ort.tgz "https://github.com/microsoft/onnxruntime/releases/download/v${{ env.ORT_VERSION }}/onnxruntime-linux-x64-${{ env.ORT_VERSION }}.tgz"
+            tar -xzf ort.tgz --strip-components=1 -C deps/onnxruntime
+            rm -f ort.tgz
+          fi
 
       - name: Cache test model
         id: cache-model
