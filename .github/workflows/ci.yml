@@ -36,9 +36,6 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Setup uv
-        uses: astral-sh/setup-uv@v7
-
       - name: Setup Zig
         uses: mlugg/setup-zig@v2
         with:
@@ -311,6 +308,12 @@ jobs:
         with:
           path: models/all-MiniLM-L6-v2
           key: model-all-MiniLM-L6-v2-v1
+
+      - name: Setup uv
+        if: steps.cache-model.outputs.cache-hit != 'true'
+        uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: false
 
       - name: Download test model
         if: steps.cache-model.outputs.cache-hit != 'true'
