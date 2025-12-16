@@ -225,7 +225,12 @@ test "provider names" {
 test "auto resolve on macos" {
     if (comptime builtin.os.tag == .macos) {
         const resolved = ExecutionProvider.autoProvider().resolve();
-        try std.testing.expect(resolved == .coreml);
+        if (comptime c_api.coreml_enabled) {
+            try std.testing.expect(resolved == .coreml);
+        } else {
+            // CoreML not enabled, should fall back to CPU
+            try std.testing.expect(resolved == .cpu);
+        }
     }
 }
 
@@ -369,12 +374,16 @@ test "resolve auto returns platform-specific provider" {
     const auto_prov = ExecutionProvider.autoProvider();
     const resolved = auto_prov.resolve();
 
-    // On macOS, should resolve to CoreML
+    // On macOS, should resolve to CoreML if enabled
     if (comptime builtin.os.tag == .macos) {
-        try std.testing.expect(resolved == .coreml);
+        if (comptime c_api.coreml_enabled) {
+            try std.testing.expect(resolved == .coreml);
+        } else {
+            try std.testing.expect(resolved == .cpu);
+        }
     } else {
-        // On other platforms, should resolve to CPU
-        try std.testing.expect(resolved == .cpu);
+        // On other platforms, should resolve to CPU (unless CUDA enabled)
+        try std.testing.expect(resolved == .cpu or resolved == .cuda);
     }
 }
 
