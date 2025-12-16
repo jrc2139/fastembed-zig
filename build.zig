@@ -39,7 +39,7 @@ pub fn build(b: *std.Build) void {
     });
 
     // Add ORT include path for @cImport (consumers handle linking)
-    fastembed_mod.addIncludePath(b.path("deps/onnxruntime-static/include"));
+    fastembed_mod.addIncludePath(b.path("deps/onnxruntime/include"));
 
     // -------------------------------------------------------------------------
     // Tests
@@ -55,7 +55,7 @@ pub fn build(b: *std.Build) void {
             },
         }),
     });
-    lib_tests.root_module.addIncludePath(b.path("deps/onnxruntime-static/include"));
+    lib_tests.root_module.addIncludePath(b.path("deps/onnxruntime/include"));
     lib_tests.root_module.addLibraryPath(b.path("deps/onnxruntime/lib"));
     lib_tests.root_module.linkSystemLibrary("onnxruntime", .{});
     lib_tests.root_module.addRPath(b.path("deps/onnxruntime/lib"));
@@ -78,7 +78,7 @@ pub fn build(b: *std.Build) void {
             },
         }),
     });
-    embed_example.root_module.addIncludePath(b.path("deps/onnxruntime-static/include"));
+    embed_example.root_module.addIncludePath(b.path("deps/onnxruntime/include"));
     embed_example.linkLibC();
 
     // For examples, link ORT dynamically by default
@@ -127,7 +127,7 @@ pub fn build(b: *std.Build) void {
             },
         }),
     });
-    benchmark_example.root_module.addIncludePath(b.path("deps/onnxruntime-static/include"));
+    benchmark_example.root_module.addIncludePath(b.path("deps/onnxruntime/include"));
     benchmark_example.linkLibC();
     if (!dynamic_ort) {
         benchmark_example.root_module.addLibraryPath(b.path("deps/onnxruntime/lib"));
@@ -150,7 +150,7 @@ pub fn build(b: *std.Build) void {
             },
         }),
     });
-    check.root_module.addIncludePath(b.path("deps/onnxruntime-static/include"));
+    check.root_module.addIncludePath(b.path("deps/onnxruntime/include"));
 
     const check_step = b.step("check", "Check for compilation errors");
     check_step.dependOn(&check.step);
