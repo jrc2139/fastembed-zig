@@ -320,7 +320,7 @@ jobs:
         run: |
           mkdir -p models/all-MiniLM-L6-v2
           # Download ONNX model
-          uvx hf=1.2.3 download \
+          uvx hf==1.2.3 download \
             xenova/all-MiniLM-L6-v2 \
             onnx/model.onnx \
             --local-dir models/all-MiniLM-L6-v2
