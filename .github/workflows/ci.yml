@@ -12,7 +12,7 @@ permissions:
 env:
   ORT_VERSION: "1.23.2"
   ZIGMOD_VERSION: "r98"
-  CACHE_VERSION: "v2"  # Bump to bust stale caches
+  CACHE_VERSION: "v2" # Bump to bust stale caches
 
 jobs:
   # =============================================================================
@@ -35,6 +35,9 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+
+      - name: Setup uv
+        uses: astral-sh/setup-uv@v7
 
       - name: Setup Zig
         uses: mlugg/setup-zig@v2
@@ -312,14 +315,13 @@ jobs:
       - name: Download test model
         if: steps.cache-model.outputs.cache-hit != 'true'
         run: |
-          pip install huggingface-hub
           mkdir -p models/all-MiniLM-L6-v2
-          huggingface-cli download \
+          uvx hf download \
             sentence-transformers/all-MiniLM-L6-v2 \
             --local-dir models/all-MiniLM-L6-v2 \
             --include "*.json" "*.txt"
           # Download ONNX model
-          huggingface-cli download \
+          uvx hf download \
             xenova/all-MiniLM-L6-v2 \
             onnx/model.onnx \
             --local-dir models/all-MiniLM-L6-v2
