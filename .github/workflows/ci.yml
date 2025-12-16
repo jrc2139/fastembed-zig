@@ -332,4 +332,4 @@ jobs:
           echo "LD_LIBRARY_PATH=${{ github.workspace }}/deps/onnxruntime/lib:$LD_LIBRARY_PATH" >> $GITHUB_ENV
 
       - name: Run integration tests
-        run: zig build test-integration --summary all
+        run: zig build test --summary all
