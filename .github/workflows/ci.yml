@@ -319,12 +319,8 @@ jobs:
         if: steps.cache-model.outputs.cache-hit != 'true'
         run: |
           mkdir -p models/all-MiniLM-L6-v2
-          uvx hf download \
-            sentence-transformers/all-MiniLM-L6-v2 \
-            --local-dir models/all-MiniLM-L6-v2 \
-            --include "*.json" "*.txt"
           # Download ONNX model
-          uvx hf download \
+          uvx hf=1.2.3 download \
             xenova/all-MiniLM-L6-v2 \
             onnx/model.onnx \
             --local-dir models/all-MiniLM-L6-v2
