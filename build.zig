@@ -151,6 +151,7 @@ pub fn build(b: *std.Build) void {
         }),
     });
     check.root_module.addIncludePath(b.path("deps/onnxruntime/include"));
+    check.linkLibC();
 
     const check_step = b.step("check", "Check for compilation errors");
     check_step.dependOn(&check.step);
