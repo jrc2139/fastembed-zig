@@ -13,6 +13,8 @@ env:
   ORT_VERSION: "1.23.2"
   ZIGMOD_VERSION: "r98"
   CACHE_VERSION: "v2" # Bump to bust stale caches
+  HF_VERSION: "1.2.3"
+  ZIG_VERSION: "0.15.2"
 
 jobs:
   # =============================================================================
@@ -39,7 +41,7 @@ jobs:
       - name: Setup Zig
         uses: mlugg/setup-zig@v2
         with:
-          version: 0.15.2
+          version: ${{ env.ZIG_VERSION }}
 
       - name: Setup Zigmod
         run: |
@@ -129,7 +131,7 @@ jobs:
       - name: Setup Zig
         uses: mlugg/setup-zig@v2
         with:
-          version: 0.15.2
+          version: ${{ env.ZIG_VERSION }}
 
       - name: Setup Zigmod
         run: |
@@ -197,7 +199,7 @@ jobs:
       - name: Setup Zig
         uses: mlugg/setup-zig@v2
         with:
-          version: 0.15.2
+          version: ${{ env.ZIG_VERSION }}
 
       - name: Setup Zigmod
         run: |
@@ -266,7 +268,7 @@ jobs:
       - name: Setup Zig
         uses: mlugg/setup-zig@v2
         with:
-          version: 0.15.2
+          version: ${{ env.ZIG_VERSION }}
 
       - name: Setup Zigmod
         run: |
@@ -320,7 +322,7 @@ jobs:
         run: |
           mkdir -p models/all-MiniLM-L6-v2
           # Download ONNX model
-          uvx hf==1.2.3 download \
+          uvx hf==${{ env.HF_VERSION }} download \
             xenova/all-MiniLM-L6-v2 \
             onnx/model.onnx \
             --local-dir models/all-MiniLM-L6-v2
