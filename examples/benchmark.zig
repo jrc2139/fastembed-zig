@@ -1,9 +1,18 @@
 //! Throughput benchmark for fastembed-zig
 //!
-//! Usage: zig build benchmark -- <model_directory> [model_type] [provider]
+//! Compares standard Embedder vs zero-allocation FastEmbedder.
+//!
+//! Usage: zig build benchmark -- <model_directory> [model_type] [provider] [mode]
+//!
+//! Modes:
+//!   both  - Compare both embedder types (default)
+//!   fast  - Only test FastEmbedder
+//!   std   - Only test standard Embedder
 
 const std = @import("std");
 const fe = @import("fastembed");
+
+const BenchMode = enum { both, fast, std_only };
 
 pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
@@ -14,9 +23,10 @@ pub fn main() !void {
     defer std.process.argsFree(allocator, args);
 
     if (args.len < 2) {
-        std.debug.print("Usage: {s} <model_directory> [model_type] [provider]\n", .{args[0]});
-        std.debug.print("\nModel types: granite (default), bge, minilm, gemma-q4, gemma-fp16\n", .{});
+        std.debug.print("Usage: {s} <model_directory> [model_type] [provider] [mode]\n", .{args[0]});
+        std.debug.print("\nModel types: granite (default), granite-small, bge, minilm, gemma-q4, gemma-fp16\n", .{});
         std.debug.print("Providers: cpu (default), coreml, coreml-all, coreml-cpu, auto\n", .{});
+        std.debug.print("Modes: both (default), fast, std\n", .{});
         return;
     }
 
@@ -25,6 +35,10 @@ pub fn main() !void {
         const type_str = args[2];
         if (std.mem.eql(u8, type_str, "granite")) {
             break :blk .granite_embedding_english_r2;
+        } else if (std.mem.eql(u8, type_str, "granite-small")) {
+            break :blk .granite_embedding_small_english_r2;
+        } else if (std.mem.eql(u8, type_str, "granite-small-qint8")) {
+            break :blk .granite_embedding_small_english_r2_qint8;
         } else if (std.mem.eql(u8, type_str, "granite-fp16")) {
             break :blk .granite_embedding_english_r2_fp16;
         } else if (std.mem.eql(u8, type_str, "bge")) {
@@ -56,21 +70,23 @@ pub fn main() !void {
         }
     } else .{ .cpu = {} };
 
-    std.debug.print("Loading model: {s}\n", .{model_type.getConfig().name});
-    std.debug.print("Path: {s}\n", .{model_path});
+    // Parse benchmark mode
+    const mode: BenchMode = if (args.len > 4) blk: {
+        const mode_str = args[4];
+        if (std.mem.eql(u8, mode_str, "fast")) {
+            break :blk .fast;
+        } else if (std.mem.eql(u8, mode_str, "std")) {
+            break :blk .std_only;
+        } else {
+            break :blk .both;
+        }
+    } else .both;
+
+    std.debug.print("=== fastembed-zig Benchmark ===\n\n", .{});
+    std.debug.print("Model: {s}\n", .{model_type.getConfig().name});
+    std.debug.print("Path:  {s}\n", .{model_path});
     std.debug.print("Provider: {s}\n", .{exec_provider.getName()});
-
-    var embedder = fe.Embedder.init(allocator, .{
-        .model = model_type,
-        .model_path = model_path,
-        .execution_provider = exec_provider,
-    }) catch |err| {
-        std.debug.print("Failed to load model: {}\n", .{err});
-        return;
-    };
-    defer embedder.deinit();
-
-    std.debug.print("Model loaded! Dimension: {d}\n\n", .{embedder.getDimension()});
+    std.debug.print("Mode: {s}\n\n", .{@tagName(mode)});
 
     // Sample texts (5 varied-length sentences)
     const base_texts = [_][]const u8{
@@ -81,49 +97,152 @@ pub fn main() !void {
         "The development of large language models has revolutionized how we approach tasks like text classification, semantic search, question answering systems, and document summarization.",
     };
 
-    std.debug.print("Benchmark (3 iterations each, warmup first):\n", .{});
-    std.debug.print("-----------------------------------------------------------\n", .{});
+    // Test batch sizes
+    const batch_sizes = [_]usize{ 10, 32, 64, 100 };
+    const max_batch_for_fast = 64; // FastEmbedder pre-allocates for max batch (keep reasonable for memory)
+    const iterations = 5;
 
-    // Test different batch sizes to compare with fastembed-go
-    const batch_sizes = [_]usize{ 10, 100, 500, 1000 };
+    // Run standard Embedder benchmark
+    if (mode == .both or mode == .std_only) {
+        std.debug.print("--- Standard Embedder (allocates per embed) ---\n", .{});
 
-    for (batch_sizes) |batch_size| {
-        // Build batch of texts
-        var texts = try allocator.alloc([]const u8, batch_size);
-        defer allocator.free(texts);
-        for (0..batch_size) |i| {
-            texts[i] = base_texts[i % base_texts.len];
+        var embedder = fe.Embedder.init(allocator, .{
+            .model = model_type,
+            .model_path = model_path,
+            .execution_provider = exec_provider,
+        }) catch |err| {
+            std.debug.print("Failed to load Embedder: {}\n", .{err});
+            return;
+        };
+        defer embedder.deinit();
+
+        std.debug.print("Dimension: {d}\n\n", .{embedder.getDimension()});
+
+        for (batch_sizes) |batch_size| {
+            try benchmarkStd(allocator, &embedder, &base_texts, batch_size, iterations);
         }
-
-        // Warmup run (first run is often slower due to ONNX initialization)
-        {
-            const emb = embedder.embed(texts) catch |err| {
-                std.debug.print("Failed: {}\n", .{err});
-                return;
-            };
-            allocator.free(emb);
-        }
-
-        // Timed runs
-        var total_ns: i128 = 0;
-        const iterations = 3;
-
-        for (0..iterations) |_| {
-            const start = std.time.nanoTimestamp();
-            const emb = embedder.embed(texts) catch |err| {
-                std.debug.print("Failed: {}\n", .{err});
-                return;
-            };
-            const elapsed = std.time.nanoTimestamp() - start;
-            total_ns += elapsed;
-            allocator.free(emb);
-        }
-
-        const avg_ns: i128 = @divTrunc(total_ns, iterations);
-        const avg_ms = @as(f64, @floatFromInt(avg_ns)) / 1_000_000.0;
-        const tps = @as(f64, @floatFromInt(@as(i128, batch_size))) / (@as(f64, @floatFromInt(avg_ns)) / 1_000_000_000.0);
-        std.debug.print("total={d:>5}: {d:>7.0}ms avg, {d:>6.1} texts/sec\n", .{ batch_size, avg_ms, tps });
+        std.debug.print("\n", .{});
     }
 
-    std.debug.print("\n", .{});
+    // Run FastEmbedder benchmark
+    if (mode == .both or mode == .fast) {
+        std.debug.print("--- FastEmbedder (zero-allocation after init) ---\n", .{});
+
+        var fast_embedder = fe.FastEmbedder.init(allocator, .{
+            .model = model_type,
+            .model_path = model_path,
+            .execution_provider = exec_provider,
+            .max_batch_size = max_batch_for_fast,
+        }) catch |err| {
+            std.debug.print("Failed to load FastEmbedder: {}\n", .{err});
+            // Fall back to just showing standard results
+            if (mode == .fast) return;
+            std.debug.print("(Skipping FastEmbedder)\n\n", .{});
+            return;
+        };
+        defer fast_embedder.deinit();
+
+        std.debug.print("Dimension: {d}\n", .{fast_embedder.getDimension()});
+        std.debug.print("Pre-allocated memory: {d:.2} MB\n\n", .{@as(f64, @floatFromInt(fast_embedder.memoryUsage())) / (1024.0 * 1024.0)});
+
+        for (batch_sizes) |batch_size| {
+            if (batch_size <= max_batch_for_fast) {
+                try benchmarkFast(allocator, &fast_embedder, &base_texts, batch_size, iterations);
+            }
+        }
+        std.debug.print("\n", .{});
+    }
+
+    // Summary
+    if (mode == .both) {
+        std.debug.print("=== Summary ===\n", .{});
+        std.debug.print("FastEmbedder eliminates per-call allocations, reducing GC pressure\n", .{});
+        std.debug.print("and providing more predictable latency for real-time applications.\n", .{});
+        std.debug.print("The performance difference is most visible in allocation-heavy workloads.\n", .{});
+    }
+}
+
+fn benchmarkStd(
+    allocator: std.mem.Allocator,
+    embedder: *fe.Embedder,
+    base_texts: []const []const u8,
+    batch_size: usize,
+    iterations: usize,
+) !void {
+    // Build batch of texts
+    var texts = try allocator.alloc([]const u8, batch_size);
+    defer allocator.free(texts);
+    for (0..batch_size) |i| {
+        texts[i] = base_texts[i % base_texts.len];
+    }
+
+    // Warmup
+    {
+        const emb = embedder.embed(texts) catch |err| {
+            std.debug.print("Embed failed: {}\n", .{err});
+            return;
+        };
+        allocator.free(emb);
+    }
+
+    // Timed runs
+    var total_ns: i128 = 0;
+    for (0..iterations) |_| {
+        const start = std.time.nanoTimestamp();
+        const emb = embedder.embed(texts) catch |err| {
+            std.debug.print("Embed failed: {}\n", .{err});
+            return;
+        };
+        const elapsed = std.time.nanoTimestamp() - start;
+        total_ns += elapsed;
+        allocator.free(emb);
+    }
+
+    printResults("Embedder", batch_size, total_ns, iterations);
+}
+
+fn benchmarkFast(
+    allocator: std.mem.Allocator,
+    embedder: *fe.FastEmbedder,
+    base_texts: []const []const u8,
+    batch_size: usize,
+    iterations: usize,
+) !void {
+    // Build batch of texts
+    var texts = try allocator.alloc([]const u8, batch_size);
+    defer allocator.free(texts);
+    for (0..batch_size) |i| {
+        texts[i] = base_texts[i % base_texts.len];
+    }
+
+    // Warmup
+    _ = embedder.embed(texts) catch |err| {
+        std.debug.print("Embed failed: {}\n", .{err});
+        return;
+    };
+
+    // Timed runs - NO allocations after warmup!
+    var total_ns: i128 = 0;
+    for (0..iterations) |_| {
+        const start = std.time.nanoTimestamp();
+        _ = embedder.embed(texts) catch |err| {
+            std.debug.print("Embed failed: {}\n", .{err});
+            return;
+        };
+        const elapsed = std.time.nanoTimestamp() - start;
+        total_ns += elapsed;
+        // No free needed - result is borrowed from internal buffer
+    }
+
+    printResults("FastEmbed", batch_size, total_ns, iterations);
+}
+
+fn printResults(name: []const u8, batch_size: usize, total_ns: i128, iterations: usize) void {
+    const avg_ns: i128 = @divTrunc(total_ns, @as(i128, @intCast(iterations)));
+    const avg_ms = @as(f64, @floatFromInt(avg_ns)) / 1_000_000.0;
+    const tps = @as(f64, @floatFromInt(@as(i128, batch_size))) / (@as(f64, @floatFromInt(avg_ns)) / 1_000_000_000.0);
+
+    std.debug.print("{s:<10} batch={d:>4}: {d:>7.1}ms avg, {d:>7.1} texts/sec\n", .{
+        name, batch_size, avg_ms, tps,
+    });
 }

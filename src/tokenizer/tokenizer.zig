@@ -2,6 +2,10 @@
 //!
 //! Provides an idiomatic Zig interface to HuggingFace tokenizers.
 //! Now powered by pure Zig tokenizer-zig library for maximum performance.
+//!
+//! This module provides two tokenizer types:
+//! - `Tokenizer`: Standard allocating tokenizer for flexibility
+//! - `FastTokenizer`: Zero-allocation tokenizer for maximum throughput
 
 const std = @import("std");
 const tokenizer_lib = @import("tokenizer");
@@ -240,4 +244,176 @@ test "Tokenizer struct size is reasonable" {
     const size = @sizeOf(Tokenizer);
     try std.testing.expect(size > 0);
     try std.testing.expect(size < 4096);
+}
+
+// =============================================================================
+// FastTokenizer - Zero-Allocation Tokenizer
+// =============================================================================
+
+/// Options for FastTokenizer initialization
+pub const FastTokenizerOptions = struct {
+    /// Maximum input sequence length in bytes
+    max_sequence_length: u32 = 8192,
+    /// Maximum output tokens per sequence
+    max_tokens: u32 = 512,
+};
+
+/// A zero-allocation tokenizer for maximum throughput.
+///
+/// After initialization, `encode()` performs zero allocations by reusing
+/// pre-allocated arena buffers. The returned encoding is valid until
+/// the next `encode()` call.
+///
+/// Use this when:
+/// - Processing many texts in a tight loop
+/// - Building real-time embedding pipelines
+/// - Memory allocation overhead is a bottleneck
+///
+/// Limitations:
+/// - Encoding is invalidated on next encode() call
+/// - Fixed maximum sequence/token limits set at init
+/// - Not suitable if you need to keep multiple encodings alive
+pub const FastTokenizer = struct {
+    allocator: std.mem.Allocator,
+    inner: tokenizer_lib.FastTokenizer,
+
+    const Self = @This();
+
+    /// Create a fast tokenizer from a JSON configuration string
+    pub fn fromJson(allocator: std.mem.Allocator, json: []const u8, opts: FastTokenizerOptions) TokenizerError!Self {
+        const inner = tokenizer_lib.FastTokenizer.fromJson(allocator, json, .{
+            .max_sequence_length = opts.max_sequence_length,
+            .max_tokens = opts.max_tokens,
+        }) catch {
+            return TokenizerError.InvalidJson;
+        };
+        return Self{
+            .allocator = allocator,
+            .inner = inner,
+        };
+    }
+
+    /// Create a fast tokenizer from a tokenizer.json file
+    pub fn fromFile(allocator: std.mem.Allocator, path: []const u8, opts: FastTokenizerOptions) TokenizerError!Self {
+        const inner = tokenizer_lib.FastTokenizer.fromFile(allocator, path, .{
+            .max_sequence_length = opts.max_sequence_length,
+            .max_tokens = opts.max_tokens,
+        }) catch |err| {
+            return switch (err) {
+                error.FileNotFound, error.AccessDenied, error.IsDir => TokenizerError.FileError,
+                error.OutOfMemory => TokenizerError.OutOfMemory,
+                else => TokenizerError.InvalidJson,
+            };
+        };
+        return Self{
+            .allocator = allocator,
+            .inner = inner,
+        };
+    }
+
+    /// Release the tokenizer and all pre-allocated buffers
+    pub fn deinit(self: *Self) void {
+        self.inner.deinit();
+    }
+
+    /// Zero-allocation encode - returns pointer to arena's encoding.
+    ///
+    /// IMPORTANT: The returned encoding is only valid until the next encode() call.
+    /// If you need to keep the result, copy the IDs to your own buffer.
+    ///
+    /// Returns a SpanEncoding with:
+    /// - `ids`: Token IDs as u32
+    /// - `len`: Number of tokens
+    /// - `getIds()`: Get slice of active IDs
+    /// - `getAttentionMask()`: Get attention mask slice
+    pub fn encode(self: *Self, text: []const u8) TokenizerError!*tokenizer_lib.SpanEncoding {
+        return self.inner.encode(text) catch {
+            return TokenizerError.TokenizationError;
+        };
+    }
+
+    /// Encode and copy IDs to caller's buffer (still zero-alloc on tokenizer side)
+    ///
+    /// Returns the number of tokens written. If buffer is too small, returns
+    /// as many tokens as fit.
+    pub fn encodeInto(self: *Self, text: []const u8, out_ids: []i64) TokenizerError!usize {
+        const encoding = try self.encode(text);
+        const ids = encoding.getIds();
+        const count = @min(ids.len, out_ids.len);
+
+        for (0..count) |i| {
+            out_ids[i] = @intCast(ids[i]);
+        }
+
+        return count;
+    }
+
+    /// Encode and copy IDs + attention mask to caller's buffers
+    ///
+    /// Returns the number of tokens written.
+    pub fn encodeWithMaskInto(
+        self: *Self,
+        text: []const u8,
+        out_ids: []i64,
+        out_mask: []i64,
+    ) TokenizerError!usize {
+        const encoding = try self.encode(text);
+        const ids = encoding.getIds();
+        const mask = encoding.getAttentionMask();
+        const count = @min(ids.len, @min(out_ids.len, out_mask.len));
+
+        for (0..count) |i| {
+            out_ids[i] = @intCast(ids[i]);
+            out_mask[i] = @intCast(mask[i]);
+        }
+
+        return count;
+    }
+
+    /// Get the number of tokens for a text without copying
+    ///
+    /// Note: This still performs tokenization (using the arena), just doesn't
+    /// copy the result. Use this for pre-flight token counting.
+    pub fn tokenCount(self: *Self, text: []const u8) usize {
+        const encoding = self.encode(text) catch return 0;
+        return encoding.len;
+    }
+
+    /// Get vocabulary size
+    pub fn getVocabSize(self: *const Self) usize {
+        return @constCast(&self.inner).getVocabSize();
+    }
+
+    /// Get memory usage of pre-allocated arena buffers
+    pub fn arenaMemoryUsage(self: *const Self) usize {
+        return self.inner.arenaMemoryUsage();
+    }
+};
+
+// =============================================================================
+// FastTokenizer Tests
+// =============================================================================
+
+test "FastTokenizer struct is defined" {
+    try std.testing.expect(@sizeOf(FastTokenizer) > 0);
+}
+
+test "FastTokenizerOptions defaults" {
+    const opts = FastTokenizerOptions{};
+    try std.testing.expectEqual(@as(u32, 8192), opts.max_sequence_length);
+    try std.testing.expectEqual(@as(u32, 512), opts.max_tokens);
+}
+
+test "FastTokenizer.fromFile - file not found" {
+    const allocator = std.testing.allocator;
+
+    const result = FastTokenizer.fromFile(allocator, "/nonexistent/path/tokenizer.json", .{});
+    try std.testing.expectError(TokenizerError.FileError, result);
+}
+
+test "FastTokenizer.fromJson - invalid JSON" {
+    const allocator = std.testing.allocator;
+
+    const result = FastTokenizer.fromJson(allocator, "not valid json", .{});
+    try std.testing.expectError(TokenizerError.InvalidJson, result);
 }

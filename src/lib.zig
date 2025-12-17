@@ -3,43 +3,62 @@
 //! A high-performance text embedding library built on ONNX Runtime
 //! and HuggingFace tokenizers.
 //!
-//! ## Quick Start
+//! ## Embedder Types
+//!
+//! This library provides two embedder implementations:
+//!
+//! - **Embedder**: Standard allocating embedder. Each `embed()` call allocates
+//!   and returns owned memory. Simple and flexible.
+//!
+//! - **FastEmbedder**: Zero-allocation embedder. Pre-allocates all buffers at init.
+//!   After init, `embed()` performs zero heap allocations. Ideal for high-throughput
+//!   pipelines and real-time applications.
+//!
+//! ## Quick Start (Standard)
 //!
 //! ```zig
 //! const fe = @import("fastembed");
 //!
-//! pub fn main() !void {
-//!     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-//!     defer _ = gpa.deinit();
-//!     const allocator = gpa.allocator();
+//! var embedder = try fe.Embedder.init(allocator, .{
+//!     .model_path = "models/bge-small-en-v1.5",
+//! });
+//! defer embedder.deinit();
 //!
-//!     // Initialize embedder with local model
-//!     var embedder = try fe.Embedder.init(allocator, .{
-//!         .model_path = "models/bge-small-en-v1.5",
-//!     });
-//!     defer embedder.deinit();
+//! const embeddings = try embedder.embed(&.{ "Hello", "World" });
+//! defer allocator.free(embeddings);
+//! ```
 //!
-//!     // Generate embeddings
-//!     const texts = &[_][]const u8{ "Hello world", "How are you?" };
-//!     const embeddings = try embedder.embed(texts);
-//!     defer allocator.free(embeddings);
+//! ## Quick Start (Zero-Allocation)
 //!
-//!     // embeddings is []f32 — [num_texts * hidden_dim] flattened
-//!     const dim = embedder.getDimension(); // 384 for BGE-small
-//!     for (0..texts.len) |i| {
-//!         const vec = embeddings[i * dim .. (i + 1) * dim];
-//!         std.debug.print("Embedding {d}: [{d:.4}, ...]\n", .{ i, vec[0] });
-//!     }
+//! ```zig
+//! const fe = @import("fastembed");
+//!
+//! var embedder = try fe.FastEmbedder.init(allocator, .{
+//!     .model_path = "models/bge-small-en-v1.5",
+//!     .max_batch_size = 64,  // Pre-allocate for up to 64 texts
+//! });
+//! defer embedder.deinit();
+//!
+//! // Zero-allocation hot path
+//! for (batches) |batch| {
+//!     const embeddings = try embedder.embed(batch);
+//!     // embeddings valid until next embed() call
 //! }
 //! ```
 
 const std = @import("std");
 
-// Core embedding functionality
+// Core embedding functionality (allocating)
 pub const embedding = @import("embedding.zig");
 pub const Embedder = embedding.Embedder;
 pub const EmbedderOptions = embedding.EmbedderOptions;
 pub const EmbedderError = embedding.EmbedderError;
+
+// Zero-allocation embedding (FastEmbedder)
+pub const fast_embedding = @import("fast_embedding.zig");
+pub const FastEmbedder = fast_embedding.FastEmbedder;
+pub const FastEmbedderOptions = fast_embedding.FastEmbedderOptions;
+pub const FastEmbedderError = fast_embedding.FastEmbedderError;
 
 // Execution providers (for GPU/Neural Engine acceleration)
 pub const ExecutionProvider = embedding.ExecutionProvider;
@@ -74,8 +93,18 @@ pub const tokenizer = @import("tokenizer/tokenizer.zig");
 pub const Tokenizer = tokenizer.Tokenizer;
 pub const TokenizerError = tokenizer.TokenizerError;
 
+// Zero-allocation tokenizer
+pub const FastTokenizer = tokenizer.FastTokenizer;
+pub const FastTokenizerOptions = tokenizer.FastTokenizerOptions;
+
 // Low-level access (ONNX)
 pub const onnx = @import("onnx/session.zig");
+pub const fast_onnx = @import("onnx/fast_session.zig");
+
+// Zero-allocation session types
+pub const FastSession = fast_onnx.FastSession;
+pub const FastSessionConfig = fast_onnx.FastSessionConfig;
+pub const IoBinding = fast_onnx.IoBinding;
 const c_api = @import("onnx/c_api.zig");
 
 // Build configuration - indicates what this binary was compiled with

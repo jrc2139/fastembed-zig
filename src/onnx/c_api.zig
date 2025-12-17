@@ -39,6 +39,7 @@ pub const OrtStatus = c.OrtStatus;
 pub const OrtRunOptions = c.OrtRunOptions;
 pub const OrtLoggingLevel = c.OrtLoggingLevel;
 pub const OrtTensorTypeAndShapeInfo = c.OrtTensorTypeAndShapeInfo;
+pub const OrtIoBinding = c.OrtIoBinding;
 
 pub const ORT_API_VERSION = c.ORT_API_VERSION;
 
