@@ -379,6 +379,248 @@ pub const Session = struct {
     pub fn getOutputCount(self: Self) usize {
         return self.output_names.items.len;
     }
+
+    // =========================================================================
+    // Async Inference Support
+    // =========================================================================
+
+    /// Callback type for async inference completion
+    pub const AsyncCallback = *const fn (
+        user_data: ?*anyopaque,
+        result: AsyncResult,
+    ) void;
+
+    /// Result of async inference
+    pub const AsyncResult = union(enum) {
+        /// Successful inference with output data (caller must free)
+        success: []f32,
+        /// Inference failed with error
+        err: OnnxError,
+    };
+
+    /// Context passed through C callback for async inference
+    const AsyncContext = struct {
+        callback: AsyncCallback,
+        user_data: ?*anyopaque,
+        api: *const c_api.OrtApi,
+        allocator: std.mem.Allocator,
+        // Input tensors that must outlive the async call
+        input_ids_tensor: *c_api.OrtValue,
+        attention_mask_tensor: *c_api.OrtValue,
+        token_type_tensor: ?*c_api.OrtValue,
+        memory_info: *c_api.OrtMemoryInfo,
+        // Input/output name pointers must also outlive the async call
+        input_name_ptrs: [3][*c]const u8,
+        output_name_ptrs: [1][*c]const u8,
+        inputs: [3]*c_api.OrtValue,
+        num_inputs: usize,
+    };
+
+    /// C-compatible trampoline that converts to Zig callback
+    fn asyncTrampoline(
+        ctx_ptr: ?*anyopaque,
+        outputs: [*c]?*c_api.OrtValue,
+        num_outputs: usize,
+        status: ?*c_api.OrtStatus,
+    ) callconv(.c) void {
+        const ctx: *AsyncContext = @ptrCast(@alignCast(ctx_ptr));
+        const api = ctx.api;
+        defer {
+            // Free input tensors and memory info
+            api.ReleaseValue.?(ctx.input_ids_tensor);
+            api.ReleaseValue.?(ctx.attention_mask_tensor);
+            if (ctx.token_type_tensor) |t| api.ReleaseValue.?(t);
+            api.ReleaseMemoryInfo.?(ctx.memory_info);
+            ctx.allocator.destroy(ctx);
+        }
+
+        // Check for errors
+        if (status) |s| {
+            api.ReleaseStatus.?(s);
+            ctx.callback(ctx.user_data, .{ .err = OnnxError.InferenceFailed });
+            return;
+        }
+
+        if (num_outputs == 0 or outputs[0] == null) {
+            ctx.callback(ctx.user_data, .{ .err = OnnxError.InferenceFailed });
+            return;
+        }
+
+        // Get output tensor info
+        var type_info: ?*c_api.OrtTensorTypeAndShapeInfo = null;
+        _ = api.GetTensorTypeAndShape.?(outputs[0].?, &type_info);
+        defer api.ReleaseTensorTypeAndShapeInfo.?(type_info.?);
+
+        var num_dims: usize = 0;
+        _ = api.GetDimensionsCount.?(type_info.?, &num_dims);
+
+        var dims: [4]i64 = undefined;
+        _ = api.GetDimensions.?(type_info.?, &dims, num_dims);
+
+        // Calculate total elements
+        var total_elements: usize = 1;
+        for (0..num_dims) |i| {
+            total_elements *= @intCast(dims[i]);
+        }
+
+        // Get output data
+        var output_data: ?*f32 = null;
+        _ = api.GetTensorMutableData.?(outputs[0].?, @ptrCast(&output_data));
+
+        // Copy to owned memory
+        const result = ctx.allocator.alloc(f32, total_elements) catch {
+            ctx.callback(ctx.user_data, .{ .err = OnnxError.OutOfMemory });
+            // Release output
+            api.ReleaseValue.?(outputs[0].?);
+            return;
+        };
+        const output_ptr: [*]f32 = @ptrCast(output_data.?);
+        @memcpy(result, output_ptr[0..total_elements]);
+
+        // Release output tensor
+        api.ReleaseValue.?(outputs[0].?);
+
+        ctx.callback(ctx.user_data, .{ .success = result });
+    }
+
+    /// Run inference asynchronously
+    ///
+    /// The callback will be invoked when inference completes (or fails).
+    /// On success, caller is responsible for freeing the returned f32 slice.
+    pub fn runAsync(
+        self: *Self,
+        input_ids: []const i64,
+        attention_mask: []const i64,
+        token_type_ids: ?[]const i64,
+        batch_size: usize,
+        seq_len: usize,
+        callback: AsyncCallback,
+        user_data: ?*anyopaque,
+    ) OnnxError!void {
+        const api = self.api;
+
+        // Allocate context (freed in trampoline)
+        const ctx = self.zig_allocator.create(AsyncContext) catch return OnnxError.OutOfMemory;
+        errdefer self.zig_allocator.destroy(ctx);
+
+        // Create memory info for CPU
+        var memory_info: ?*c_api.OrtMemoryInfo = null;
+        var status = api.CreateCpuMemoryInfo.?(0, 0, &memory_info);
+        if (status != null) {
+            api.ReleaseStatus.?(status);
+            return OnnxError.TensorCreationFailed;
+        }
+        errdefer api.ReleaseMemoryInfo.?(memory_info.?);
+
+        // Shape for input tensors [batch_size, seq_len]
+        var shape = [_]i64{ @intCast(batch_size), @intCast(seq_len) };
+
+        // Create input tensors (must outlive async call)
+        var input_ids_tensor: ?*c_api.OrtValue = null;
+        status = api.CreateTensorWithDataAsOrtValue.?(
+            memory_info.?,
+            @ptrCast(@constCast(input_ids.ptr)),
+            input_ids.len * @sizeOf(i64),
+            &shape,
+            2,
+            c_api.TensorElementType.int64.toC(),
+            &input_ids_tensor,
+        );
+        if (status != null) {
+            api.ReleaseStatus.?(status);
+            return OnnxError.TensorCreationFailed;
+        }
+        errdefer api.ReleaseValue.?(input_ids_tensor.?);
+
+        var attention_mask_tensor: ?*c_api.OrtValue = null;
+        status = api.CreateTensorWithDataAsOrtValue.?(
+            memory_info.?,
+            @ptrCast(@constCast(attention_mask.ptr)),
+            attention_mask.len * @sizeOf(i64),
+            &shape,
+            2,
+            c_api.TensorElementType.int64.toC(),
+            &attention_mask_tensor,
+        );
+        if (status != null) {
+            api.ReleaseStatus.?(status);
+            return OnnxError.TensorCreationFailed;
+        }
+        errdefer api.ReleaseValue.?(attention_mask_tensor.?);
+
+        // Optional token_type_ids
+        var token_type_tensor: ?*c_api.OrtValue = null;
+        if (token_type_ids) |tti| {
+            status = api.CreateTensorWithDataAsOrtValue.?(
+                memory_info.?,
+                @ptrCast(@constCast(tti.ptr)),
+                tti.len * @sizeOf(i64),
+                &shape,
+                2,
+                c_api.TensorElementType.int64.toC(),
+                &token_type_tensor,
+            );
+            if (status != null) {
+                api.ReleaseStatus.?(status);
+                return OnnxError.TensorCreationFailed;
+            }
+        }
+        errdefer if (token_type_tensor) |t| api.ReleaseValue.?(t);
+
+        // Prepare output array (on stack, not passed to RunAsync)
+        var outputs: [1]?*c_api.OrtValue = .{null};
+
+        // Fill context with all arrays that must outlive the async call
+        ctx.* = .{
+            .callback = callback,
+            .user_data = user_data,
+            .api = api,
+            .allocator = self.zig_allocator,
+            .input_ids_tensor = input_ids_tensor.?,
+            .attention_mask_tensor = attention_mask_tensor.?,
+            .token_type_tensor = token_type_tensor,
+            .memory_info = memory_info.?,
+            .input_name_ptrs = undefined,
+            .output_name_ptrs = undefined,
+            .inputs = undefined,
+            .num_inputs = 2,
+        };
+
+        // Set up input arrays in context (must persist until callback)
+        ctx.inputs[0] = input_ids_tensor.?;
+        ctx.inputs[1] = attention_mask_tensor.?;
+        ctx.input_name_ptrs[0] = self.input_names.items[0].ptr;
+        ctx.input_name_ptrs[1] = self.input_names.items[1].ptr;
+
+        if (token_type_tensor != null and self.input_names.items.len > 2) {
+            ctx.inputs[2] = token_type_tensor.?;
+            ctx.input_name_ptrs[2] = self.input_names.items[2].ptr;
+            ctx.num_inputs = 3;
+        }
+
+        // Set up output names in context
+        ctx.output_name_ptrs[0] = self.output_names.items[0].ptr;
+
+        // Call RunAsync with pointers to context arrays
+        status = api.RunAsync.?(
+            self.ptr,
+            null, // run options
+            &ctx.input_name_ptrs,
+            @ptrCast(&ctx.inputs),
+            ctx.num_inputs,
+            &ctx.output_name_ptrs,
+            1,
+            @ptrCast(&outputs),
+            asyncTrampoline,
+            ctx,
+        );
+        if (status != null) {
+            api.ReleaseStatus.?(status);
+            // Context will be freed by errdefers
+            return OnnxError.InferenceFailed;
+        }
+        // On success, tensors will be freed in trampoline after async completion
+    }
 };
 
 test "Environment creation" {
