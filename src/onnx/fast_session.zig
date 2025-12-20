@@ -375,6 +375,24 @@ pub const FastSession = struct {
     pub fn getSession(self: *const Self) *const Session {
         return &self.session;
     }
+
+    /// Run inference asynchronously with pre-allocated buffers.
+    ///
+    /// Prerequisites:
+    /// - Fill input_ids and attention_mask buffers with data
+    /// - Call with actual batch_size and seq_len (must be <= config max)
+    ///
+    /// The callback receives a slice of the pre-allocated output_buffer.
+    /// The slice is valid until the next run/runAsync call.
+    pub fn runAsync(
+        self: *Self,
+        batch_size: usize,
+        seq_len: usize,
+        callback: AsyncCallback,
+        user_data: ?*anyopaque,
+    ) FastSessionError!void {
+        return FastSessionAsync.runAsync(self, batch_size, seq_len, callback, user_data);
+    }
 };
 
 // =============================================================================
@@ -402,4 +420,266 @@ test "FastSession struct has expected fields" {
     try std.testing.expect(@hasField(FastSession, "input_ids"));
     try std.testing.expect(@hasField(FastSession, "attention_mask"));
     try std.testing.expect(@hasField(FastSession, "output_buffer"));
+}
+
+// =============================================================================
+// Async Inference Support
+// =============================================================================
+
+/// Callback type for async FastSession inference completion
+pub const AsyncCallback = *const fn (user_data: ?*anyopaque, result: AsyncResult) void;
+
+/// Result of async inference
+pub const AsyncResult = union(enum) {
+    /// Successful inference - slice into pre-allocated output buffer (valid until next run)
+    success: []f32,
+    /// Inference failed
+    err: FastSessionError,
+};
+
+/// Context for async inference callback
+const AsyncContext = struct {
+    callback: AsyncCallback,
+    user_data: ?*anyopaque,
+    fast_session: *FastSession,
+    batch_size: usize,
+    seq_len: usize,
+    // Input tensors that must outlive the async call
+    input_ids_tensor: *c_api.OrtValue,
+    attention_mask_tensor: *c_api.OrtValue,
+    token_type_tensor: ?*c_api.OrtValue,
+    memory_info: *c_api.OrtMemoryInfo,
+    // Arrays that must persist until callback
+    input_name_ptrs: [3][*c]const u8,
+    output_name_ptrs: [1][*c]const u8,
+    inputs: [3]*c_api.OrtValue,
+    num_inputs: usize,
+};
+
+/// C-compatible trampoline for async inference
+fn asyncTrampoline(
+    ctx_ptr: ?*anyopaque,
+    outputs: [*c]?*c_api.OrtValue,
+    num_outputs: usize,
+    status: ?*c_api.OrtStatus,
+) callconv(.c) void {
+    const ctx: *AsyncContext = @ptrCast(@alignCast(ctx_ptr));
+    const api = ctx.fast_session.api;
+    const allocator = ctx.fast_session.allocator;
+
+    defer {
+        // Free input tensors and memory info
+        api.ReleaseValue.?(ctx.input_ids_tensor);
+        api.ReleaseValue.?(ctx.attention_mask_tensor);
+        if (ctx.token_type_tensor) |t| api.ReleaseValue.?(t);
+        api.ReleaseMemoryInfo.?(ctx.memory_info);
+        allocator.destroy(ctx);
+    }
+
+    // Check for errors
+    if (status) |s| {
+        api.ReleaseStatus.?(s);
+        ctx.callback(ctx.user_data, .{ .err = FastSessionError.InferenceFailed });
+        return;
+    }
+
+    if (num_outputs == 0 or outputs[0] == null) {
+        ctx.callback(ctx.user_data, .{ .err = FastSessionError.InferenceFailed });
+        return;
+    }
+
+    // Get output tensor info
+    var type_info: ?*c_api.OrtTensorTypeAndShapeInfo = null;
+    _ = api.GetTensorTypeAndShape.?(outputs[0].?, &type_info);
+    defer api.ReleaseTensorTypeAndShapeInfo.?(type_info.?);
+
+    var num_dims: usize = 0;
+    _ = api.GetDimensionsCount.?(type_info.?, &num_dims);
+
+    var dims: [4]i64 = undefined;
+    _ = api.GetDimensions.?(type_info.?, &dims, num_dims);
+
+    // Calculate total elements
+    var total_elements: usize = 1;
+    for (0..num_dims) |i| {
+        total_elements *= @intCast(dims[i]);
+    }
+
+    // Get output data pointer
+    var output_data: ?*f32 = null;
+    _ = api.GetTensorMutableData.?(outputs[0].?, @ptrCast(&output_data));
+
+    // Copy to pre-allocated output buffer (zero-allocation hot path)
+    const output_ptr: [*]f32 = @ptrCast(output_data.?);
+    const fast = ctx.fast_session;
+    const copy_len = @min(total_elements, fast.output_buffer.len);
+    @memcpy(fast.output_buffer[0..copy_len], output_ptr[0..copy_len]);
+
+    // Release output tensor
+    api.ReleaseValue.?(outputs[0].?);
+
+    // Calculate expected output size for the slice
+    const config = fast.config;
+    const output_size = if (config.output_is_pooled)
+        ctx.batch_size * config.hidden_dim
+    else
+        ctx.batch_size * ctx.seq_len * config.hidden_dim;
+
+    ctx.callback(ctx.user_data, .{ .success = fast.output_buffer[0..output_size] });
+}
+
+/// Extension to FastSession for async inference
+pub const FastSessionAsync = struct {
+    /// Run inference asynchronously with pre-allocated buffers.
+    ///
+    /// Prerequisites:
+    /// - Fill input_ids and attention_mask buffers with data
+    /// - Call with actual batch_size and seq_len (must be <= config max)
+    ///
+    /// The callback receives a slice of the pre-allocated output_buffer.
+    /// The slice is valid until the next run/runAsync call.
+    pub fn runAsync(
+        self: *FastSession,
+        batch_size: usize,
+        seq_len: usize,
+        callback: AsyncCallback,
+        user_data: ?*anyopaque,
+    ) FastSessionError!void {
+        if (batch_size > self.config.max_batch_size or seq_len > self.config.max_seq_len) {
+            return FastSessionError.InvalidConfiguration;
+        }
+
+        const api = self.api;
+
+        // Allocate context (freed in trampoline)
+        const ctx = self.allocator.create(AsyncContext) catch return FastSessionError.OutOfMemory;
+        errdefer self.allocator.destroy(ctx);
+
+        // Create memory info for CPU
+        var memory_info: ?*c_api.OrtMemoryInfo = null;
+        var status = api.CreateCpuMemoryInfo.?(0, 0, &memory_info);
+        if (status != null) {
+            api.ReleaseStatus.?(status);
+            return FastSessionError.TensorCreationFailed;
+        }
+        errdefer api.ReleaseMemoryInfo.?(memory_info.?);
+
+        // Create input tensors with actual shape
+        var shape = [_]i64{ @intCast(batch_size), @intCast(seq_len) };
+        const input_size = batch_size * seq_len;
+
+        // Create input_ids tensor
+        var input_ids_tensor: ?*c_api.OrtValue = null;
+        status = api.CreateTensorWithDataAsOrtValue.?(
+            memory_info.?,
+            @ptrCast(self.input_ids.ptr),
+            input_size * @sizeOf(i64),
+            &shape,
+            2,
+            c_api.TensorElementType.int64.toC(),
+            &input_ids_tensor,
+        );
+        if (status != null) {
+            api.ReleaseStatus.?(status);
+            return FastSessionError.TensorCreationFailed;
+        }
+        errdefer api.ReleaseValue.?(input_ids_tensor.?);
+
+        // Create attention_mask tensor
+        var attention_mask_tensor: ?*c_api.OrtValue = null;
+        status = api.CreateTensorWithDataAsOrtValue.?(
+            memory_info.?,
+            @ptrCast(self.attention_mask.ptr),
+            input_size * @sizeOf(i64),
+            &shape,
+            2,
+            c_api.TensorElementType.int64.toC(),
+            &attention_mask_tensor,
+        );
+        if (status != null) {
+            api.ReleaseStatus.?(status);
+            return FastSessionError.TensorCreationFailed;
+        }
+        errdefer api.ReleaseValue.?(attention_mask_tensor.?);
+
+        // Create token_type_ids tensor if needed
+        var token_type_ids_tensor: ?*c_api.OrtValue = null;
+        if (self.config.use_token_type_ids) {
+            status = api.CreateTensorWithDataAsOrtValue.?(
+                memory_info.?,
+                @ptrCast(self.token_type_ids.?.ptr),
+                input_size * @sizeOf(i64),
+                &shape,
+                2,
+                c_api.TensorElementType.int64.toC(),
+                &token_type_ids_tensor,
+            );
+            if (status != null) {
+                api.ReleaseStatus.?(status);
+                return FastSessionError.TensorCreationFailed;
+            }
+        }
+        errdefer if (token_type_ids_tensor) |t| api.ReleaseValue.?(t);
+
+        // Prepare output array (on stack, not passed to RunAsync)
+        var outputs: [1]?*c_api.OrtValue = .{null};
+
+        // Fill context
+        ctx.* = .{
+            .callback = callback,
+            .user_data = user_data,
+            .fast_session = self,
+            .batch_size = batch_size,
+            .seq_len = seq_len,
+            .input_ids_tensor = input_ids_tensor.?,
+            .attention_mask_tensor = attention_mask_tensor.?,
+            .token_type_tensor = token_type_ids_tensor,
+            .memory_info = memory_info.?,
+            .input_name_ptrs = undefined,
+            .output_name_ptrs = undefined,
+            .inputs = undefined,
+            .num_inputs = 2,
+        };
+
+        // Set up input arrays in context
+        ctx.inputs[0] = input_ids_tensor.?;
+        ctx.inputs[1] = attention_mask_tensor.?;
+        ctx.input_name_ptrs[0] = self.session.input_names.items[0].ptr;
+        ctx.input_name_ptrs[1] = self.session.input_names.items[1].ptr;
+
+        if (token_type_ids_tensor != null and self.session.input_names.items.len > 2) {
+            ctx.inputs[2] = token_type_ids_tensor.?;
+            ctx.input_name_ptrs[2] = self.session.input_names.items[2].ptr;
+            ctx.num_inputs = 3;
+        }
+
+        // Set up output names in context
+        ctx.output_name_ptrs[0] = self.session.output_names.items[0].ptr;
+
+        // Call RunAsync
+        status = api.RunAsync.?(
+            self.session.ptr,
+            null, // run options
+            &ctx.input_name_ptrs,
+            @ptrCast(&ctx.inputs),
+            ctx.num_inputs,
+            &ctx.output_name_ptrs,
+            1,
+            @ptrCast(&outputs),
+            asyncTrampoline,
+            ctx,
+        );
+        if (status != null) {
+            api.ReleaseStatus.?(status);
+            return FastSessionError.InferenceFailed;
+        }
+        // On success, tensors will be freed in trampoline after async completion
+    }
+};
+
+test "FastSessionAsync types exist" {
+    // Verify async types are accessible
+    _ = AsyncCallback;
+    _ = AsyncResult;
+    try std.testing.expect(true);
 }

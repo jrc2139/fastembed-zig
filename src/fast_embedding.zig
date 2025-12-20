@@ -285,6 +285,54 @@ pub const FastEmbedder = struct {
         return embeddings;
     }
 
+    /// Query embedding with prefix (for asymmetric models).
+    /// Note: Prefix concatenation requires one allocation, but embedding is zero-alloc.
+    pub fn queryEmbed(self: *Self, query: []const u8) FastEmbedderError![]f32 {
+        if (self.config.query_prefix) |prefix| {
+            const prefixed = std.fmt.allocPrint(self.allocator, "{s}{s}", .{ prefix, query }) catch {
+                return FastEmbedderError.OutOfMemory;
+            };
+            defer self.allocator.free(prefixed);
+            return self.embedOne(prefixed);
+        }
+        return self.embedOne(query);
+    }
+
+    /// Passage embedding with prefix (for asymmetric models).
+    pub fn passageEmbed(self: *Self, passage: []const u8) FastEmbedderError![]f32 {
+        if (self.config.passage_prefix) |prefix| {
+            const prefixed = std.fmt.allocPrint(self.allocator, "{s}{s}", .{ prefix, passage }) catch {
+                return FastEmbedderError.OutOfMemory;
+            };
+            defer self.allocator.free(prefixed);
+            return self.embedOne(prefixed);
+        }
+        return self.embedOne(passage);
+    }
+
+    /// Batch passage embedding with prefix (for asymmetric models).
+    pub fn passageEmbedBatch(self: *Self, passages: []const []const u8) FastEmbedderError![]f32 {
+        if (self.config.passage_prefix) |prefix| {
+            // Allocate prefixed texts
+            var prefixed_texts = self.allocator.alloc([]u8, passages.len) catch return FastEmbedderError.OutOfMemory;
+            defer {
+                for (prefixed_texts) |text| self.allocator.free(text);
+                self.allocator.free(prefixed_texts);
+            }
+
+            for (passages, 0..) |passage, i| {
+                prefixed_texts[i] = std.fmt.allocPrint(self.allocator, "{s}{s}", .{ prefix, passage }) catch {
+                    for (prefixed_texts[0..i]) |text| self.allocator.free(text);
+                    return FastEmbedderError.OutOfMemory;
+                };
+            }
+
+            const const_texts: []const []const u8 = @ptrCast(prefixed_texts);
+            return self.embed(const_texts);
+        }
+        return self.embed(passages);
+    }
+
     /// CLS pooling: take first token's embedding
     fn poolCls(self: *Self, hidden_states: []f32, batch_size: usize, seq_len: usize) []f32 {
         const hidden_dim = self.config.hidden_dim;
@@ -363,6 +411,153 @@ pub const FastEmbedder = struct {
         const tokenizer_arena = self.tokenizer.arenaMemoryUsage();
 
         return input_size + output_size + pooled_size + seq_lengths_size + tokenizer_arena;
+    }
+
+    // =========================================================================
+    // Async Embedding Support
+    // =========================================================================
+
+    /// Callback type for async embedding completion
+    pub const AsyncEmbedCallback = *const fn (user_data: ?*anyopaque, result: AsyncEmbedResult) void;
+
+    /// Result of async embedding
+    pub const AsyncEmbedResult = union(enum) {
+        /// Successful embedding - slice into pre-allocated pooled_buffer (valid until next embed call)
+        success: []f32,
+        /// Embedding failed
+        err: FastEmbedderError,
+    };
+
+    /// Context for async embedding callback
+    const AsyncEmbedContext = struct {
+        embedder: *Self,
+        callback: AsyncEmbedCallback,
+        user_data: ?*anyopaque,
+        batch_size: usize,
+        actual_max_seq_len: usize,
+    };
+
+    /// Internal callback that handles pooling and normalization after async inference
+    fn asyncEmbedTrampoline(user_data: ?*anyopaque, result: fast_session.AsyncResult) void {
+        const ctx: *AsyncEmbedContext = @ptrCast(@alignCast(user_data));
+        const embedder = ctx.embedder;
+
+        defer embedder.allocator.destroy(ctx);
+
+        switch (result) {
+            .err => {
+                ctx.callback(ctx.user_data, .{ .err = FastEmbedderError.InferenceError });
+            },
+            .success => |hidden_states| {
+                // Pool and normalize the hidden states
+                const batch_size = ctx.batch_size;
+                const actual_max_seq_len = ctx.actual_max_seq_len;
+
+                // Get attention mask for mean pooling
+                const buffers = embedder.session.getInputBuffers(batch_size, actual_max_seq_len);
+
+                // Pool if needed
+                var embeddings: []f32 = undefined;
+                if (embedder.config.output_is_pooled) {
+                    embeddings = hidden_states[0 .. batch_size * embedder.config.hidden_dim];
+                    // Copy to pooled_buffer for consistency
+                    @memcpy(embedder.pooled_buffer[0..embeddings.len], embeddings);
+                    embeddings = embedder.pooled_buffer[0..embeddings.len];
+                } else {
+                    // Pool token outputs to get sentence embeddings
+                    const output_seq_len = hidden_states.len / (batch_size * embedder.config.hidden_dim);
+                    embeddings = switch (embedder.config.pooling) {
+                        .cls => embedder.poolCls(hidden_states, batch_size, output_seq_len),
+                        .mean => embedder.poolMean(hidden_states, buffers.attention_mask, batch_size, output_seq_len, actual_max_seq_len),
+                    };
+                }
+
+                // Normalize if needed
+                if (embedder.do_normalize) {
+                    normalize.l2NormalizeBatch(embeddings, batch_size, embedder.config.hidden_dim);
+                }
+
+                ctx.callback(ctx.user_data, .{ .success = embeddings });
+            },
+        }
+    }
+
+    /// Embed multiple texts asynchronously. Zero allocations after init (except callback context).
+    ///
+    /// This method:
+    /// 1. Tokenizes texts synchronously (fast, ~1ms)
+    /// 2. Submits async ONNX inference
+    /// 3. Callback handles pooling + normalization, then invokes user callback
+    ///
+    /// The callback receives a slice of [batch_size * hidden_dim] floats.
+    /// The slice is valid until the next embed/embedAsync call.
+    pub fn embedAsync(
+        self: *Self,
+        texts: []const []const u8,
+        callback: AsyncEmbedCallback,
+        user_data: ?*anyopaque,
+    ) FastEmbedderError!void {
+        if (texts.len == 0) {
+            callback(user_data, .{ .success = &[_]f32{} });
+            return;
+        }
+
+        if (texts.len > self.max_batch_size) {
+            return FastEmbedderError.BatchTooLarge;
+        }
+
+        const batch_size = texts.len;
+
+        // Phase 1: Tokenize all texts and find max sequence length
+        var actual_max_seq_len: usize = 0;
+        for (texts, 0..) |text, i| {
+            const encoding = self.tokenizer.encode(text) catch {
+                return FastEmbedderError.TokenizerError;
+            };
+            const seq_len = @min(@as(usize, encoding.len), self.max_seq_len);
+            self.seq_lengths[i] = seq_len;
+            actual_max_seq_len = @max(actual_max_seq_len, seq_len);
+        }
+
+        // Phase 2: Fill input buffers with padding
+        const buffers = self.session.getInputBuffers(batch_size, actual_max_seq_len);
+        @memset(buffers.input_ids, 0);
+        @memset(buffers.attention_mask, 0);
+
+        // Phase 3: Re-tokenize and fill buffers
+        for (texts, 0..) |text, batch_idx| {
+            const encoding = self.tokenizer.encode(text) catch {
+                return FastEmbedderError.TokenizerError;
+            };
+
+            const seq_len = self.seq_lengths[batch_idx];
+            const ids = encoding.getIds();
+            const offset = batch_idx * actual_max_seq_len;
+
+            for (0..seq_len) |i| {
+                buffers.input_ids[offset + i] = @intCast(ids[i]);
+                buffers.attention_mask[offset + i] = 1;
+            }
+        }
+
+        // Allocate context for callback (freed in trampoline)
+        const ctx = self.allocator.create(AsyncEmbedContext) catch {
+            return FastEmbedderError.OutOfMemory;
+        };
+        errdefer self.allocator.destroy(ctx);
+
+        ctx.* = .{
+            .embedder = self,
+            .callback = callback,
+            .user_data = user_data,
+            .batch_size = batch_size,
+            .actual_max_seq_len = actual_max_seq_len,
+        };
+
+        // Phase 4: Submit async inference
+        self.session.runAsync(batch_size, actual_max_seq_len, asyncEmbedTrampoline, ctx) catch {
+            return FastEmbedderError.InferenceError;
+        };
     }
 };
 

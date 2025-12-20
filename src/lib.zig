@@ -60,6 +60,10 @@ pub const FastEmbedder = fast_embedding.FastEmbedder;
 pub const FastEmbedderOptions = fast_embedding.FastEmbedderOptions;
 pub const FastEmbedderError = fast_embedding.FastEmbedderError;
 
+// Async embedding types
+pub const AsyncEmbedCallback = FastEmbedder.AsyncEmbedCallback;
+pub const AsyncEmbedResult = FastEmbedder.AsyncEmbedResult;
+
 // Execution providers (for GPU/Neural Engine acceleration)
 pub const ExecutionProvider = embedding.ExecutionProvider;
 pub const CoreMLOptions = embedding.CoreMLOptions;
@@ -105,6 +109,10 @@ pub const fast_onnx = @import("onnx/fast_session.zig");
 pub const FastSession = fast_onnx.FastSession;
 pub const FastSessionConfig = fast_onnx.FastSessionConfig;
 pub const IoBinding = fast_onnx.IoBinding;
+
+// Async inference types
+pub const AsyncCallback = fast_onnx.AsyncCallback;
+pub const AsyncResult = fast_onnx.AsyncResult;
 const c_api = @import("onnx/c_api.zig");
 
 // Build configuration - indicates what this binary was compiled with

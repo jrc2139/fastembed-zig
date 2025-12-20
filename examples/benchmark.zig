@@ -15,7 +15,7 @@ const std = @import("std");
 const fe = @import("fastembed");
 const onnx = fe.onnx;
 
-const BenchMode = enum { both, fast, std_only, async_only, all };
+const BenchMode = enum { both, fast, std_only, async_only, fast_async, all };
 
 pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
@@ -29,7 +29,7 @@ pub fn main() !void {
         std.debug.print("Usage: {s} <model_directory> [model_type] [provider] [mode]\n", .{args[0]});
         std.debug.print("\nModel types: granite (default), granite-small, bge, minilm, gemma-q4, gemma-fp16\n", .{});
         std.debug.print("Providers: cpu (default), coreml, coreml-all, coreml-cpu, auto\n", .{});
-        std.debug.print("Modes: both (default), fast, std, async, all\n", .{});
+        std.debug.print("Modes: both (default), fast, std, async, fast_async, all\n", .{});
         return;
     }
 
@@ -82,6 +82,8 @@ pub fn main() !void {
             break :blk .std_only;
         } else if (std.mem.eql(u8, mode_str, "async")) {
             break :blk .async_only;
+        } else if (std.mem.eql(u8, mode_str, "fast_async")) {
+            break :blk .fast_async;
         } else if (std.mem.eql(u8, mode_str, "all")) {
             break :blk .all;
         } else {
@@ -155,6 +157,35 @@ pub fn main() !void {
         for (batch_sizes) |batch_size| {
             if (batch_size <= max_batch_for_fast) {
                 try benchmarkFast(allocator, &fast_embedder, &base_texts, batch_size, iterations);
+            }
+        }
+        std.debug.print("\n", .{});
+    }
+
+    // Run FastEmbedder async benchmark
+    if (mode == .fast_async or mode == .all) {
+        std.debug.print("--- FastEmbedder Async (embedAsync) ---\n", .{});
+
+        var fast_embedder = fe.FastEmbedder.init(allocator, .{
+            .model = model_type,
+            .model_path = model_path,
+            .execution_provider = exec_provider,
+            .max_batch_size = max_batch_for_fast,
+        }) catch |err| {
+            std.debug.print("Failed to load FastEmbedder: {}\n", .{err});
+            if (mode == .fast_async) return;
+            std.debug.print("(Skipping FastEmbedder async)\n\n", .{});
+            return;
+        };
+        defer fast_embedder.deinit();
+
+        std.debug.print("Dimension: {d}\n", .{fast_embedder.getDimension()});
+        std.debug.print("Pre-allocated memory: {d:.2} MB\n\n", .{@as(f64, @floatFromInt(fast_embedder.memoryUsage())) / (1024.0 * 1024.0)});
+
+        const fast_async_batch_sizes = [_]usize{ 1, 4, 8, 16, 32 };
+        for (fast_async_batch_sizes) |batch_size| {
+            if (batch_size <= max_batch_for_fast) {
+                try benchmarkFastAsync(allocator, &fast_embedder, &base_texts, batch_size, iterations);
             }
         }
         std.debug.print("\n", .{});
@@ -295,6 +326,102 @@ fn benchmarkFast(
     }
 
     printResults("FastEmbed", batch_size, total_ns, iterations);
+}
+
+/// Context for FastEmbedder async callback
+const FastAsyncBenchContext = struct {
+    completed: std.atomic.Value(bool),
+    result: ?[]f32,
+    err: ?fe.FastEmbedderError,
+};
+
+/// Callback for FastEmbedder async benchmark
+fn fastAsyncCallback(user_data: ?*anyopaque, result: fe.AsyncEmbedResult) void {
+    const ctx: *FastAsyncBenchContext = @ptrCast(@alignCast(user_data));
+    switch (result) {
+        .success => |data| {
+            ctx.result = data;
+            ctx.err = null;
+        },
+        .err => |e| {
+            ctx.result = null;
+            ctx.err = e;
+        },
+    }
+    ctx.completed.store(true, .release);
+}
+
+fn benchmarkFastAsync(
+    allocator: std.mem.Allocator,
+    embedder: *fe.FastEmbedder,
+    base_texts: []const []const u8,
+    batch_size: usize,
+    iterations: usize,
+) !void {
+    // Build batch of texts
+    var texts = try allocator.alloc([]const u8, batch_size);
+    defer allocator.free(texts);
+    for (0..batch_size) |i| {
+        texts[i] = base_texts[i % base_texts.len];
+    }
+
+    // Warmup with async
+    {
+        var ctx = FastAsyncBenchContext{
+            .completed = std.atomic.Value(bool).init(false),
+            .result = null,
+            .err = null,
+        };
+
+        embedder.embedAsync(texts, fastAsyncCallback, &ctx) catch |err| {
+            std.debug.print("FastEmbedder async warmup failed: {}\n", .{err});
+            return;
+        };
+
+        // Spin wait for completion
+        while (!ctx.completed.load(.acquire)) {
+            std.Thread.sleep(1000); // 1us
+        }
+
+        if (ctx.err) |e| {
+            std.debug.print("FastEmbedder async warmup error: {}\n", .{e});
+            return;
+        }
+        // No free needed - result is borrowed from internal buffer
+    }
+
+    // Timed async runs
+    var total_ns: i128 = 0;
+    for (0..iterations) |_| {
+        var ctx = FastAsyncBenchContext{
+            .completed = std.atomic.Value(bool).init(false),
+            .result = null,
+            .err = null,
+        };
+
+        const start = std.time.nanoTimestamp();
+
+        embedder.embedAsync(texts, fastAsyncCallback, &ctx) catch |err| {
+            std.debug.print("FastEmbedder async run failed: {}\n", .{err});
+            return;
+        };
+
+        // Spin wait for completion
+        while (!ctx.completed.load(.acquire)) {
+            std.Thread.sleep(1000); // 1us
+        }
+
+        const elapsed = std.time.nanoTimestamp() - start;
+        total_ns += elapsed;
+
+        if (ctx.err) |e| {
+            std.debug.print("FastEmbedder async inference error: {}\n", .{e});
+            return;
+        }
+        // No free needed - result is borrowed from internal buffer
+    }
+
+    printResults("FastAsync", batch_size, total_ns, iterations);
 }
 
 fn printResults(name: []const u8, batch_size: usize, total_ns: i128, iterations: usize) void {
