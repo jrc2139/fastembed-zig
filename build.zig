@@ -17,6 +17,18 @@ pub fn build(b: *std.Build) void {
     const build_options_mod = build_options.createModule();
 
     // -------------------------------------------------------------------------
+    // ONNX Runtime paths - configurable via build option, defaults to ~/.local/share/onnxruntime
+    // -------------------------------------------------------------------------
+    const home = std.posix.getenv("HOME") orelse "/tmp";
+    const default_ort_dir = b.fmt("{s}/.local/share/onnxruntime", .{home});
+    const ort_dir = b.option([]const u8, "ort_path", "Path to ONNX Runtime installation") orelse default_ort_dir;
+    const ort_include: std.Build.LazyPath = .{ .cwd_relative = b.fmt("{s}/include", .{ort_dir}) };
+    const ort_lib: std.Build.LazyPath = .{ .cwd_relative = b.fmt("{s}/lib", .{ort_dir}) };
+
+    // Add download step if ONNX Runtime is not installed
+    const download_step = addOrtDownloadStep(b, ort_dir);
+
+    // -------------------------------------------------------------------------
     // Dependencies via build.zig.zon
     // -------------------------------------------------------------------------
     const onnxruntime_dep = b.dependency("onnxruntime_zig", .{
@@ -25,6 +37,7 @@ pub fn build(b: *std.Build) void {
         .cuda_enabled = cuda_enabled,
         .coreml_enabled = coreml_enabled,
         .dynamic_ort = dynamic_ort,
+        .ort_path = ort_dir,
     });
     const onnxruntime_mod = onnxruntime_dep.module("onnxruntime");
 
@@ -49,7 +62,7 @@ pub fn build(b: *std.Build) void {
     });
 
     // Add ORT include path for @cImport
-    fastembed_mod.addIncludePath(b.path("deps/onnxruntime/include"));
+    fastembed_mod.addIncludePath(ort_include);
 
     // -------------------------------------------------------------------------
     // Tests
@@ -66,11 +79,11 @@ pub fn build(b: *std.Build) void {
             },
         }),
     });
-    lib_tests.root_module.addIncludePath(b.path("deps/onnxruntime/include"));
-    lib_tests.root_module.addLibraryPath(b.path("deps/onnxruntime/lib"));
+    lib_tests.root_module.addIncludePath(ort_include);
+    lib_tests.root_module.addLibraryPath(ort_lib);
     if (!dynamic_ort) {
         lib_tests.root_module.linkSystemLibrary("onnxruntime", .{});
-        lib_tests.root_module.addRPath(b.path("deps/onnxruntime/lib"));
+        lib_tests.root_module.addRPath(ort_lib);
     }
     lib_tests.linkLibC();
 
@@ -81,8 +94,11 @@ pub fn build(b: *std.Build) void {
         }
     }
 
+    const run_tests = b.addRunArtifact(lib_tests);
+    run_tests.step.dependOn(download_step);
+
     const test_step = b.step("test", "Run all tests");
-    test_step.dependOn(&b.addRunArtifact(lib_tests).step);
+    test_step.dependOn(&run_tests.step);
 
     // -------------------------------------------------------------------------
     // Example: Basic Embedding
@@ -98,13 +114,13 @@ pub fn build(b: *std.Build) void {
             },
         }),
     });
-    embed_example.root_module.addIncludePath(b.path("deps/onnxruntime/include"));
+    embed_example.root_module.addIncludePath(ort_include);
     embed_example.linkLibC();
 
     if (!dynamic_ort) {
-        embed_example.root_module.addLibraryPath(b.path("deps/onnxruntime/lib"));
+        embed_example.root_module.addLibraryPath(ort_lib);
         embed_example.root_module.linkSystemLibrary("onnxruntime", .{});
-        embed_example.root_module.addRPath(b.path("deps/onnxruntime/lib"));
+        embed_example.root_module.addRPath(ort_lib);
     }
 
     if (target.result.os.tag == .macos) {
@@ -114,6 +130,7 @@ pub fn build(b: *std.Build) void {
         }
     }
 
+    embed_example.step.dependOn(download_step);
     b.installArtifact(embed_example);
 
     const run_embed = b.addRunArtifact(embed_example);
@@ -153,12 +170,12 @@ pub fn build(b: *std.Build) void {
             },
         }),
     });
-    benchmark_example.root_module.addIncludePath(b.path("deps/onnxruntime/include"));
+    benchmark_example.root_module.addIncludePath(ort_include);
     benchmark_example.linkLibC();
     if (!dynamic_ort) {
-        benchmark_example.root_module.addLibraryPath(b.path("deps/onnxruntime/lib"));
+        benchmark_example.root_module.addLibraryPath(ort_lib);
         benchmark_example.root_module.linkSystemLibrary("onnxruntime", .{});
-        benchmark_example.root_module.addRPath(b.path("deps/onnxruntime/lib"));
+        benchmark_example.root_module.addRPath(ort_lib);
     }
     if (target.result.os.tag == .macos) {
         benchmark_example.root_module.linkFramework("Foundation", .{});
@@ -166,6 +183,7 @@ pub fn build(b: *std.Build) void {
             benchmark_example.root_module.linkFramework("CoreML", .{});
         }
     }
+    benchmark_example.step.dependOn(download_step);
     b.installArtifact(benchmark_example);
 
     // -------------------------------------------------------------------------
@@ -183,9 +201,62 @@ pub fn build(b: *std.Build) void {
             },
         }),
     });
-    check.root_module.addIncludePath(b.path("deps/onnxruntime/include"));
+    check.root_module.addIncludePath(ort_include);
     check.linkLibC();
 
     const check_step = b.step("check", "Check for compilation errors");
     check_step.dependOn(&check.step);
+
+    // -------------------------------------------------------------------------
+    // Setup step (manual download trigger)
+    // -------------------------------------------------------------------------
+    const setup_step = b.step("setup", "Download ONNX Runtime if not present");
+    setup_step.dependOn(download_step);
+}
+
+/// Add a step that downloads ONNX Runtime if not present
+fn addOrtDownloadStep(b: *std.Build, ort_dir: []const u8) *std.Build.Step {
+    const check_and_download = b.addSystemCommand(&.{
+        "sh", "-c", b.fmt(
+            \\if [ -f "{[0]s}/lib/libonnxruntime.dylib" ] || [ -f "{[0]s}/lib/libonnxruntime.so" ]; then
+            \\    echo "ONNX Runtime found at {[0]s}"
+            \\else
+            \\    echo "Downloading ONNX Runtime to {[0]s}..."
+            \\    mkdir -p "{[0]s}"
+            \\
+            \\    # Detect OS and architecture
+            \\    OS=$(uname -s)
+            \\    ARCH=$(uname -m)
+            \\    VERSION="1.20.1"
+            \\
+            \\    if [ "$OS" = "Darwin" ]; then
+            \\        if [ "$ARCH" = "arm64" ]; then
+            \\            URL="https://github.com/microsoft/onnxruntime/releases/download/v$VERSION/onnxruntime-osx-arm64-$VERSION.tgz"
+            \\        else
+            \\            URL="https://github.com/microsoft/onnxruntime/releases/download/v$VERSION/onnxruntime-osx-x86_64-$VERSION.tgz"
+            \\        fi
+            \\    elif [ "$OS" = "Linux" ]; then
+            \\        if [ "$ARCH" = "aarch64" ]; then
+            \\            URL="https://github.com/microsoft/onnxruntime/releases/download/v$VERSION/onnxruntime-linux-aarch64-$VERSION.tgz"
+            \\        else
+            \\            URL="https://github.com/microsoft/onnxruntime/releases/download/v$VERSION/onnxruntime-linux-x64-$VERSION.tgz"
+            \\        fi
+            \\    else
+            \\        echo "Unsupported OS: $OS"
+            \\        exit 1
+            \\    fi
+            \\
+            \\    echo "Downloading from $URL"
+            \\    curl -L "$URL" | tar xz -C "{[0]s}" --strip-components=1
+            \\
+            \\    if [ -f "{[0]s}/lib/libonnxruntime.dylib" ] || [ -f "{[0]s}/lib/libonnxruntime.so" ]; then
+            \\        echo "ONNX Runtime installed successfully"
+            \\    else
+            \\        echo "Failed to install ONNX Runtime"
+            \\        exit 1
+            \\    fi
+            \\fi
+        , .{ort_dir}),
+    });
+    return &check_and_download.step;
 }
