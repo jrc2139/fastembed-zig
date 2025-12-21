@@ -15,7 +15,7 @@
         .onnxruntime_zig = .{
             // .path = "../onnxruntime-zig",
             .url = "git+https://github.com/jrc2139/onnxruntime-zig#main",
-            .hash = "onnxruntime_zig-0.1.0-LIEwXyI1AQDTcXgbhwX_3Qj-3EygDHbsKthUe8L6TIAk",
+            .hash = "onnxruntime_zig-0.1.0-LIEwX_02AQC71PpqE0Nw6KGLErw4JEvGcNhhKCtfb-pR",
         },
         .tokenizer_zig = .{
             // .path = "../tokenizer-zig",
