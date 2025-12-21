@@ -11,7 +11,6 @@ permissions:
 
 env:
   ORT_VERSION: "1.23.2"
-  ZIGMOD_VERSION: "r98"
   CACHE_VERSION: "v2" # Bump to bust stale caches
   HF_VERSION: "1.2.3"
   ZIG_VERSION: "0.15.2"
@@ -42,20 +41,6 @@ jobs:
         uses: mlugg/setup-zig@v2
         with:
           version: ${{ env.ZIG_VERSION }}
-
-      - name: Setup Zigmod
-        run: |
-          if [ "${{ runner.os }}" = "Linux" ]; then
-            sudo curl -fsSLo /usr/local/bin/zigmod https://github.com/nektro/zigmod/releases/download/${{ env.ZIGMOD_VERSION }}/zigmod-x86_64-linux
-            sudo chmod +x /usr/local/bin/zigmod
-          else
-            sudo curl -fsSLo /usr/local/bin/zigmod https://github.com/nektro/zigmod/releases/download/${{ env.ZIGMOD_VERSION }}/zigmod-aarch64-macos
-            sudo chmod +x /usr/local/bin/zigmod
-          fi
-          zigmod version || echo "zigmod ${{ env.ZIGMOD_VERSION }}"
-
-      - name: Fetch zigmod dependencies
-        run: zigmod fetch
 
       - name: Cache Zig build
         uses: actions/cache@v5
@@ -133,20 +118,6 @@ jobs:
         with:
           version: ${{ env.ZIG_VERSION }}
 
-      - name: Setup Zigmod
-        run: |
-          if [ "${{ runner.os }}" = "Linux" ]; then
-            sudo curl -fsSLo /usr/local/bin/zigmod https://github.com/nektro/zigmod/releases/download/${{ env.ZIGMOD_VERSION }}/zigmod-x86_64-linux
-            sudo chmod +x /usr/local/bin/zigmod
-          else
-            sudo curl -fsSLo /usr/local/bin/zigmod https://github.com/nektro/zigmod/releases/download/${{ env.ZIGMOD_VERSION }}/zigmod-aarch64-macos
-            sudo chmod +x /usr/local/bin/zigmod
-          fi
-          zigmod version || echo "zigmod ${{ env.ZIGMOD_VERSION }}"
-
-      - name: Fetch zigmod dependencies
-        run: zigmod fetch
-
       - name: Cache Zig build
         uses: actions/cache@v5
         with:
@@ -200,20 +171,6 @@ jobs:
         uses: mlugg/setup-zig@v2
         with:
           version: ${{ env.ZIG_VERSION }}
-
-      - name: Setup Zigmod
-        run: |
-          if [ "${{ runner.os }}" = "Linux" ]; then
-            sudo curl -fsSLo /usr/local/bin/zigmod https://github.com/nektro/zigmod/releases/download/${{ env.ZIGMOD_VERSION }}/zigmod-x86_64-linux
-            sudo chmod +x /usr/local/bin/zigmod
-          else
-            sudo curl -fsSLo /usr/local/bin/zigmod https://github.com/nektro/zigmod/releases/download/${{ env.ZIGMOD_VERSION }}/zigmod-aarch64-macos
-            sudo chmod +x /usr/local/bin/zigmod
-          fi
-          zigmod version || echo "zigmod ${{ env.ZIGMOD_VERSION }}"
-
-      - name: Fetch zigmod dependencies
-        run: zigmod fetch
 
       - name: Cache Zig build
         uses: actions/cache@v5
@@ -269,20 +226,6 @@ jobs:
         uses: mlugg/setup-zig@v2
         with:
           version: ${{ env.ZIG_VERSION }}
-
-      - name: Setup Zigmod
-        run: |
-          if [ "${{ runner.os }}" = "Linux" ]; then
-            sudo curl -fsSLo /usr/local/bin/zigmod https://github.com/nektro/zigmod/releases/download/${{ env.ZIGMOD_VERSION }}/zigmod-x86_64-linux
-            sudo chmod +x /usr/local/bin/zigmod
-          else
-            sudo curl -fsSLo /usr/local/bin/zigmod https://github.com/nektro/zigmod/releases/download/${{ env.ZIGMOD_VERSION }}/zigmod-aarch64-macos
-            sudo chmod +x /usr/local/bin/zigmod
-          fi
-          zigmod version || echo "zigmod ${{ env.ZIGMOD_VERSION }}"
-
-      - name: Fetch zigmod dependencies
-        run: zigmod fetch
 
       - name: Cache ONNX Runtime
         id: cache-ort
