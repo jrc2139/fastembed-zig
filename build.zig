@@ -227,7 +227,7 @@ fn addOrtDownloadStep(b: *std.Build, ort_dir: []const u8) *std.Build.Step {
             \\    # Detect OS and architecture
             \\    OS=$(uname -s)
             \\    ARCH=$(uname -m)
-            \\    VERSION="1.20.1"
+            \\    VERSION="1.23.2"
             \\
             \\    if [ "$OS" = "Darwin" ]; then
             \\        if [ "$ARCH" = "arm64" ]; then
