@@ -26,6 +26,16 @@ pub fn build(b: *std.Build) void {
     });
 
     // -------------------------------------------------------------------------
+    // ONNX Runtime Zig module from deps.zig
+    // -------------------------------------------------------------------------
+    const onnxruntime_mod = b.createModule(.{
+        .root_source_file = .{ .cwd_relative = deps.dirs._uyctouesdcji ++ "/src/lib.zig" },
+        .target = target,
+        .optimize = optimize,
+    });
+    onnxruntime_mod.addIncludePath(b.path("deps/onnxruntime/include"));
+
+    // -------------------------------------------------------------------------
     // Fastembed module (exported for consumers)
     // -------------------------------------------------------------------------
     const fastembed_mod = b.addModule("fastembed", .{
@@ -35,6 +45,7 @@ pub fn build(b: *std.Build) void {
         .imports = &.{
             .{ .name = "tokenizer", .module = tokenizer_mod },
             .{ .name = "build_options", .module = build_options.createModule() },
+            .{ .name = "onnxruntime-zig", .module = onnxruntime_mod },
         },
     });
 
@@ -52,6 +63,7 @@ pub fn build(b: *std.Build) void {
             .imports = &.{
                 .{ .name = "tokenizer", .module = tokenizer_mod },
                 .{ .name = "build_options", .module = build_options.createModule() },
+                .{ .name = "onnxruntime-zig", .module = onnxruntime_mod },
             },
         }),
     });
@@ -147,6 +159,7 @@ pub fn build(b: *std.Build) void {
             .imports = &.{
                 .{ .name = "tokenizer", .module = tokenizer_mod },
                 .{ .name = "build_options", .module = build_options.createModule() },
+                .{ .name = "onnxruntime-zig", .module = onnxruntime_mod },
             },
         }),
     });

@@ -143,7 +143,7 @@ pub const FastEmbedder = struct {
         errdefer tokenizer.deinit();
 
         // Initialize ONNX environment
-        var env = session_mod.Environment.init() catch {
+        var env = session_mod.Environment.init(.{}) catch {
             return FastEmbedderError.ModelError;
         };
         errdefer env.deinit();

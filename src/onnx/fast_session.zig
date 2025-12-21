@@ -10,13 +10,17 @@
 //!
 //! This is ideal for embedding models where input shapes vary
 //! and you want maximum throughput with minimal allocations.
+//!
+//! Uses onnxruntime-zig's generic types with fastembed's dynamic-loading c_api.
 
 const std = @import("std");
 const c_api = @import("c_api.zig");
 const session_mod = @import("session.zig");
 
+// Re-export types from session_mod (which uses onnxruntime-zig)
 pub const Environment = session_mod.Environment;
 pub const Session = session_mod.Session;
+pub const ExecutionProvider = session_mod.ExecutionProvider;
 
 /// Error type for fast session operations
 pub const FastSessionError = error{

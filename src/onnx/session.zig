@@ -1,14 +1,19 @@
 //! ONNX Runtime Session for inference
 //!
 //! Simplified session wrapper focused on embedding model inference.
+//! Uses onnxruntime-zig's generic types with fastembed's dynamic-loading c_api.
 
 const std = @import("std");
 const c_api = @import("c_api.zig");
-const provider = @import("provider.zig");
+const ort = @import("onnxruntime-zig");
 
-pub const ExecutionProvider = provider.ExecutionProvider;
-pub const CoreMLOptions = provider.CoreMLOptions;
-pub const CoreMLComputeUnits = provider.CoreMLComputeUnits;
+// Instantiate onnxruntime-zig types with fastembed's c_api (supports dynamic loading)
+const ORT = ort.OnnxRuntime(c_api);
+
+// Re-export execution provider types from onnxruntime-zig
+pub const ExecutionProvider = ORT.ExecutionProvider;
+pub const CoreMLOptions = ort.CoreMLOptions;
+pub const CoreMLComputeUnits = ort.CoreMLComputeUnits;
 
 /// Error type for ONNX operations
 pub const OnnxError = error{
@@ -25,38 +30,8 @@ pub const OnnxError = error{
     ProviderNotAvailable,
 };
 
-/// ONNX Runtime Environment (one per application)
-pub const Environment = struct {
-    ptr: *c_api.OrtEnv,
-    api: *const c_api.OrtApi,
-
-    const Self = @This();
-
-    pub fn init() OnnxError!Self {
-        const api = c_api.getApi() orelse return OnnxError.ApiNotAvailable;
-
-        var env: ?*c_api.OrtEnv = null;
-        const status = api.CreateEnv.?(
-            c_api.LoggingLevel.warning.toC(),
-            "fastembed",
-            &env,
-        );
-
-        if (status != null) {
-            api.ReleaseStatus.?(status);
-            return OnnxError.EnvironmentCreationFailed;
-        }
-
-        return Self{
-            .ptr = env.?,
-            .api = api,
-        };
-    }
-
-    pub fn deinit(self: *Self) void {
-        self.api.ReleaseEnv.?(self.ptr);
-    }
-};
+/// ONNX Runtime Environment - uses onnxruntime-zig's Environment with fastembed's c_api
+pub const Environment = ORT.Environment;
 
 /// ONNX Runtime Session for running inference
 pub const Session = struct {
@@ -100,11 +75,11 @@ pub const Session = struct {
 
         // Configure execution provider
         const exec_provider = options.execution_provider.resolve();
-        var actual_provider: provider.ExecutionProvider = exec_provider;
+        var actual_provider: ExecutionProvider = exec_provider;
         exec_provider.apply(opts.?) catch |err| {
             // If provider fails, fall back to CPU
             std.log.warn("Failed to configure {s} provider: {}, falling back to CPU", .{ options.execution_provider.getName(), err });
-            actual_provider = provider.ExecutionProvider.cpuProvider();
+            actual_provider = ExecutionProvider.cpuProvider();
         };
         std.log.info("Using {s} execution provider", .{actual_provider.getName()});
 
@@ -624,7 +599,7 @@ pub const Session = struct {
 };
 
 test "Environment creation" {
-    var env = try Environment.init();
+    var env = try Environment.init(.{});
     defer env.deinit();
 }
 
@@ -723,7 +698,7 @@ test "CoreMLComputeUnits re-export" {
 test "Environment init and deinit multiple times" {
     // Test that we can create and destroy multiple environments
     for (0..3) |_| {
-        var env = try Environment.init();
+        var env = try Environment.init(.{});
         env.deinit();
     }
 }

@@ -44,6 +44,31 @@ pub const OrtIoBinding = c.OrtIoBinding;
 pub const ORT_API_VERSION = c.ORT_API_VERSION;
 
 // =============================================================================
+// Error codes (for generic c_api compatibility with onnxruntime-zig)
+// =============================================================================
+
+pub const ORT_OK = c.ORT_OK;
+pub const ORT_FAIL = c.ORT_FAIL;
+pub const ORT_INVALID_ARGUMENT = c.ORT_INVALID_ARGUMENT;
+pub const ORT_NO_SUCHFILE = c.ORT_NO_SUCHFILE;
+pub const ORT_NO_MODEL = c.ORT_NO_MODEL;
+pub const ORT_ENGINE_ERROR = c.ORT_ENGINE_ERROR;
+pub const ORT_RUNTIME_EXCEPTION = c.ORT_RUNTIME_EXCEPTION;
+pub const ORT_INVALID_PROTOBUF = c.ORT_INVALID_PROTOBUF;
+pub const ORT_MODEL_LOADED = c.ORT_MODEL_LOADED;
+pub const ORT_NOT_IMPLEMENTED = c.ORT_NOT_IMPLEMENTED;
+pub const ORT_INVALID_GRAPH = c.ORT_INVALID_GRAPH;
+pub const ORT_EP_FAIL = c.ORT_EP_FAIL;
+
+// =============================================================================
+// Memory allocator types (for generic c_api compatibility with onnxruntime-zig)
+// =============================================================================
+
+pub const OrtArenaAllocator = c.OrtArenaAllocator;
+pub const OrtDeviceAllocator = c.OrtDeviceAllocator;
+pub const OrtMemTypeDefault = c.OrtMemTypeDefault;
+
+// =============================================================================
 // Dynamic loading support
 // =============================================================================
 
@@ -270,12 +295,11 @@ pub const OrtCUDAProviderOptions = extern struct {
     tunable_op_max_tuning_duration_ms: c_int = 0,
 };
 
-/// Append CUDA execution provider to session options (only available when cuda_enabled)
-/// This extern is only valid when linking against CUDA-enabled ONNX Runtime
-pub extern fn OrtSessionOptionsAppendExecutionProvider_CUDA(
-    options: *OrtSessionOptions,
-    device_id: c_int,
-) ?*OrtStatus;
+/// CUDA execution provider - conditionally available when cuda_enabled
+pub const OrtSessionOptionsAppendExecutionProvider_CUDA = if (cuda_enabled)
+    @extern(*const fn (*OrtSessionOptions, c_int) callconv(.c) ?*OrtStatus, .{ .name = "OrtSessionOptionsAppendExecutionProvider_CUDA" })
+else
+    @as(?*const fn (*OrtSessionOptions, c_int) callconv(.c) ?*OrtStatus, null);
 
 test "can get API" {
     const api = getApi();

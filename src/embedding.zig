@@ -82,7 +82,7 @@ pub const Embedder = struct {
         errdefer tok.deinit();
 
         // Initialize ONNX environment
-        var env = onnx.Environment.init() catch {
+        var env = onnx.Environment.init(.{}) catch {
             return EmbedderError.ModelError;
         };
         errdefer env.deinit();
