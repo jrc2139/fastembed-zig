@@ -247,7 +247,7 @@ fn addOrtDownloadStep(b: *std.Build, ort_dir: []const u8) *std.Build.Step {
             \\    fi
             \\
             \\    echo "Downloading from $URL"
-            \\    curl -L "$URL" | tar xz -C "{[0]s}" --strip-components=1
+            \\    curl -L "$URL" | tar xz -C "{[0]s}" --strip-components=2
             \\
             \\    if [ -f "{[0]s}/lib/libonnxruntime.dylib" ] || [ -f "{[0]s}/lib/libonnxruntime.so" ]; then
             \\        echo "ONNX Runtime installed successfully"
