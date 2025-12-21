@@ -7,8 +7,20 @@
         "build.zig",
         "build.zig.zon",
         "src",
-        "examples",
+        "deps",
     },
-    // Dependencies managed by zigmod - keep empty to avoid conflicts
-    .dependencies = .{},
+    .dependencies = .{
+        // Local path dependencies for development
+        // After pushing to GitHub, replace with URL-based dependencies
+        .onnxruntime_zig = .{
+            // .path = "../onnxruntime-zig",
+            .url = "git+https://github.com/jrc2139/onnxruntime-zig#main",
+            .hash = "onnxruntime_zig-0.1.0-LIEwXyI1AQDTcXgbhwX_3Qj-3EygDHbsKthUe8L6TIAk",
+        },
+        .tokenizer_zig = .{
+            // .path = "../tokenizer-zig",
+            .url = "git+https://github.com/jrc2139/tokenizer-zig#main",
+            .hash = "tokenizer_zig-0.1.0-XptNCPDfAwDwWjgc4xkx-aRoJCj-b3eCSpCB4JVYEsfP",
+        },
+    },
 }

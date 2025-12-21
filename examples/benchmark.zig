@@ -215,7 +215,7 @@ pub fn main() !void {
         defer allocator.free(model_onnx_path_z);
         @memcpy(model_onnx_path_z, model_onnx_path);
 
-        var env = onnx.Environment.init() catch |err| {
+        var env = onnx.Environment.init(.{}) catch |err| {
             std.debug.print("Failed to create environment: {}\n", .{err});
             return;
         };

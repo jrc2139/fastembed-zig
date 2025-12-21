@@ -1,39 +1,38 @@
 const std = @import("std");
-const deps = @import("deps.zig");
 
 pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
 
-    // Build options passed from consumer or defaults
-    const dynamic_ort = b.option(bool, "dynamic-ort", "Load ONNX Runtime dynamically at runtime") orelse false;
-    const coreml_enabled = b.option(bool, "coreml", "Enable CoreML execution provider (macOS only)") orelse false;
-    const cuda_enabled = b.option(bool, "cuda", "Enable CUDA execution provider") orelse false;
+    // Build options (can be passed from parent project)
+    const dynamic_ort = b.option(bool, "dynamic_ort", "Load ONNX Runtime dynamically at runtime") orelse false;
+    const coreml_enabled = b.option(bool, "coreml_enabled", "Enable CoreML execution provider (macOS only)") orelse true;
+    const cuda_enabled = b.option(bool, "cuda_enabled", "Enable CUDA execution provider") orelse false;
 
     // Create build options module
     const build_options = b.addOptions();
     build_options.addOption(bool, "coreml_enabled", coreml_enabled);
     build_options.addOption(bool, "cuda_enabled", cuda_enabled);
     build_options.addOption(bool, "dynamic_ort", dynamic_ort);
+    const build_options_mod = build_options.createModule();
 
     // -------------------------------------------------------------------------
-    // Tokenizer module from deps.zig
+    // Dependencies via build.zig.zon
     // -------------------------------------------------------------------------
-    const tokenizer_mod = b.createModule(.{
-        .root_source_file = .{ .cwd_relative = deps.dirs._scqblt0nmsfe ++ "/src/lib.zig" },
+    const onnxruntime_dep = b.dependency("onnxruntime_zig", .{
+        .target = target,
+        .optimize = optimize,
+        .cuda_enabled = cuda_enabled,
+        .coreml_enabled = coreml_enabled,
+        .dynamic_ort = dynamic_ort,
+    });
+    const onnxruntime_mod = onnxruntime_dep.module("onnxruntime");
+
+    const tokenizer_dep = b.dependency("tokenizer_zig", .{
         .target = target,
         .optimize = optimize,
     });
-
-    // -------------------------------------------------------------------------
-    // ONNX Runtime Zig module from deps.zig
-    // -------------------------------------------------------------------------
-    const onnxruntime_mod = b.createModule(.{
-        .root_source_file = .{ .cwd_relative = deps.dirs._uyctouesdcji ++ "/src/lib.zig" },
-        .target = target,
-        .optimize = optimize,
-    });
-    onnxruntime_mod.addIncludePath(b.path("deps/onnxruntime/include"));
+    const tokenizer_mod = tokenizer_dep.module("tokenizer");
 
     // -------------------------------------------------------------------------
     // Fastembed module (exported for consumers)
@@ -44,12 +43,12 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
         .imports = &.{
             .{ .name = "tokenizer", .module = tokenizer_mod },
-            .{ .name = "build_options", .module = build_options.createModule() },
+            .{ .name = "build_options", .module = build_options_mod },
             .{ .name = "onnxruntime-zig", .module = onnxruntime_mod },
         },
     });
 
-    // Add ORT include path for @cImport (consumers handle linking)
+    // Add ORT include path for @cImport
     fastembed_mod.addIncludePath(b.path("deps/onnxruntime/include"));
 
     // -------------------------------------------------------------------------
@@ -62,16 +61,25 @@ pub fn build(b: *std.Build) void {
             .optimize = optimize,
             .imports = &.{
                 .{ .name = "tokenizer", .module = tokenizer_mod },
-                .{ .name = "build_options", .module = build_options.createModule() },
+                .{ .name = "build_options", .module = build_options_mod },
                 .{ .name = "onnxruntime-zig", .module = onnxruntime_mod },
             },
         }),
     });
     lib_tests.root_module.addIncludePath(b.path("deps/onnxruntime/include"));
     lib_tests.root_module.addLibraryPath(b.path("deps/onnxruntime/lib"));
-    lib_tests.root_module.linkSystemLibrary("onnxruntime", .{});
-    lib_tests.root_module.addRPath(b.path("deps/onnxruntime/lib"));
+    if (!dynamic_ort) {
+        lib_tests.root_module.linkSystemLibrary("onnxruntime", .{});
+        lib_tests.root_module.addRPath(b.path("deps/onnxruntime/lib"));
+    }
     lib_tests.linkLibC();
+
+    if (target.result.os.tag == .macos) {
+        lib_tests.root_module.linkFramework("Foundation", .{});
+        if (coreml_enabled) {
+            lib_tests.root_module.linkFramework("CoreML", .{});
+        }
+    }
 
     const test_step = b.step("test", "Run all tests");
     test_step.dependOn(&b.addRunArtifact(lib_tests).step);
@@ -93,11 +101,17 @@ pub fn build(b: *std.Build) void {
     embed_example.root_module.addIncludePath(b.path("deps/onnxruntime/include"));
     embed_example.linkLibC();
 
-    // For examples, link ORT dynamically by default
     if (!dynamic_ort) {
         embed_example.root_module.addLibraryPath(b.path("deps/onnxruntime/lib"));
         embed_example.root_module.linkSystemLibrary("onnxruntime", .{});
         embed_example.root_module.addRPath(b.path("deps/onnxruntime/lib"));
+    }
+
+    if (target.result.os.tag == .macos) {
+        embed_example.root_module.linkFramework("Foundation", .{});
+        if (coreml_enabled) {
+            embed_example.root_module.linkFramework("CoreML", .{});
+        }
     }
 
     b.installArtifact(embed_example);
@@ -146,6 +160,12 @@ pub fn build(b: *std.Build) void {
         benchmark_example.root_module.linkSystemLibrary("onnxruntime", .{});
         benchmark_example.root_module.addRPath(b.path("deps/onnxruntime/lib"));
     }
+    if (target.result.os.tag == .macos) {
+        benchmark_example.root_module.linkFramework("Foundation", .{});
+        if (coreml_enabled) {
+            benchmark_example.root_module.linkFramework("CoreML", .{});
+        }
+    }
     b.installArtifact(benchmark_example);
 
     // -------------------------------------------------------------------------
@@ -158,7 +178,7 @@ pub fn build(b: *std.Build) void {
             .optimize = optimize,
             .imports = &.{
                 .{ .name = "tokenizer", .module = tokenizer_mod },
-                .{ .name = "build_options", .module = build_options.createModule() },
+                .{ .name = "build_options", .module = build_options_mod },
                 .{ .name = "onnxruntime-zig", .module = onnxruntime_mod },
             },
         }),
