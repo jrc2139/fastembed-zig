@@ -20,7 +20,7 @@
         .tokenizer_zig = .{
             // .path = "../tokenizer-zig",
             .url = "git+https://github.com/jrc2139/tokenizer-zig#main",
-            .hash = "tokenizer_zig-0.1.0-XptNCPDfAwDwWjgc4xkx-aRoJCj-b3eCSpCB4JVYEsfP",
+            .hash = "tokenizer_zig-0.1.0-XptNCEPiAwCbzLXxjZkyru0Q0uTi_E1A_um0o07qtyga",
         },
     },
 }
