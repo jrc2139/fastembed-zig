@@ -104,12 +104,12 @@ pub const FastEmbedder = struct {
             return FastEmbedderError.ModelError;
         };
 
-        // Determine limits - use 512 as default to avoid huge memory allocations
-        // for models like granite which support up to 8192 tokens
+        // Determine limits - use 2048 as default cap to balance memory vs sequence length.
+        // Models like granite support up to 8192 tokens, but 2048 is sufficient for most code chunks.
         const max_seq_len = if (options.max_seq_len > 0)
             options.max_seq_len
         else
-            @min(model_config.max_seq_len, 512);
+            @min(model_config.max_seq_len, 2048);
 
         const max_batch_size = options.max_batch_size;
         const do_normalize = options.do_normalize orelse model_config.normalize;
