@@ -347,7 +347,89 @@ pub const Embedder = struct {
     pub fn getDimension(self: Self) usize {
         return self.config.hidden_dim;
     }
+
+    // =========================================================================
+    // Bi-Encoder Reranking
+    // =========================================================================
+
+    /// Bi-encoder rerank: compute similarity between query and documents.
+    ///
+    /// Uses the embedding model as a bi-encoder:
+    /// 1. Embed query (with query prefix for asymmetric models)
+    /// 2. Embed all documents (with passage prefix for asymmetric models)
+    /// 3. Compute cosine similarity between query and each document
+    /// 4. Return results sorted by score descending
+    ///
+    /// Caller owns returned slice and must free it.
+    pub fn rerank(self: *Self, query: []const u8, documents: []const []const u8) EmbedderError![]RerankResult {
+        if (documents.len == 0) {
+            return &[_]RerankResult{};
+        }
+
+        // Embed query
+        const query_embedding = try self.queryEmbed(query);
+        defer self.allocator.free(query_embedding);
+
+        // Embed all documents (batched automatically)
+        const doc_embeddings = try self.passageEmbedBatch(documents);
+        defer self.allocator.free(doc_embeddings);
+
+        const dim = self.config.hidden_dim;
+
+        // Allocate results
+        var results = self.allocator.alloc(RerankResult, documents.len) catch return EmbedderError.OutOfMemory;
+        errdefer self.allocator.free(results);
+
+        // Compute similarities
+        for (0..documents.len) |i| {
+            const doc_start = i * dim;
+            const doc_embedding = doc_embeddings[doc_start..][0..dim];
+            results[i] = .{
+                .score = normalize.cosineSimilarity(query_embedding, doc_embedding),
+                .index = i,
+            };
+        }
+
+        // Sort by score descending
+        std.mem.sort(RerankResult, results, {}, struct {
+            fn lessThan(_: void, a: RerankResult, b: RerankResult) bool {
+                return b.score < a.score;
+            }
+        }.lessThan);
+
+        return results;
+    }
+
+    /// Bi-encoder rerank: compute similarity scores only (unsorted).
+    ///
+    /// Returns scores parallel to input documents array.
+    /// Caller owns returned slice and must free it.
+    pub fn rerankScores(self: *Self, query: []const u8, documents: []const []const u8) EmbedderError![]f32 {
+        if (documents.len == 0) {
+            return &[_]f32{};
+        }
+
+        const query_embedding = try self.queryEmbed(query);
+        defer self.allocator.free(query_embedding);
+
+        const doc_embeddings = try self.passageEmbedBatch(documents);
+        defer self.allocator.free(doc_embeddings);
+
+        const dim = self.config.hidden_dim;
+
+        var scores = self.allocator.alloc(f32, documents.len) catch return EmbedderError.OutOfMemory;
+        errdefer self.allocator.free(scores);
+
+        for (0..documents.len) |i| {
+            const doc_start = i * dim;
+            scores[i] = normalize.cosineSimilarity(query_embedding, doc_embeddings[doc_start..][0..dim]);
+        }
+
+        return scores;
+    }
 };
+
+const RerankResult = @import("lib.zig").RerankResult;
 
 test "Embedder struct compiles" {
     try std.testing.expect(@sizeOf(Embedder) > 0);
@@ -633,4 +715,24 @@ test "Model hidden dimensions match expected values" {
 
     // 1024-dim models (large)
     try std.testing.expectEqual(@as(usize, 1024), models.Model.multilingual_e5_large.getConfig().hidden_dim);
+}
+
+// =============================================================================
+// BI-ENCODER RERANKING TESTS
+// =============================================================================
+
+test "RerankResult struct" {
+    const result = RerankResult{ .score = 0.95, .index = 2 };
+    try std.testing.expectApproxEqAbs(@as(f32, 0.95), result.score, 0.001);
+    try std.testing.expectEqual(@as(usize, 2), result.index);
+}
+
+test "RerankResult struct size" {
+    // score (f32=4) + index (usize=8 on 64-bit) + padding
+    try std.testing.expect(@sizeOf(RerankResult) <= 16);
+}
+
+test "Embedder has rerank methods" {
+    try std.testing.expect(@hasDecl(Embedder, "rerank"));
+    try std.testing.expect(@hasDecl(Embedder, "rerankScores"));
 }

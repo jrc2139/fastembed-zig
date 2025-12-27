@@ -414,6 +414,108 @@ pub const FastEmbedder = struct {
     }
 
     // =========================================================================
+    // Bi-Encoder Reranking
+    // =========================================================================
+
+    /// Bi-encoder rerank: compute similarity between query and documents.
+    ///
+    /// Uses the embedding model as a bi-encoder:
+    /// 1. Embed query (with query prefix for asymmetric models)
+    /// 2. Embed all documents (with passage prefix for asymmetric models)
+    /// 3. Compute cosine similarity between query and each document
+    /// 4. Return results sorted by score descending
+    ///
+    /// Note: This method allocates memory for results and temporary query embedding.
+    /// The zero-allocation property only applies to the embedding computation itself.
+    ///
+    /// Caller owns returned slice and must free it.
+    pub fn rerank(self: *Self, query: []const u8, documents: []const []const u8) FastEmbedderError![]RerankResult {
+        if (documents.len == 0) {
+            return &[_]RerankResult{};
+        }
+
+        const dim = self.config.hidden_dim;
+
+        // Embed query and copy to temp storage (pooled_buffer will be overwritten)
+        const query_slice = try self.queryEmbed(query);
+        const query_embedding = self.allocator.alloc(f32, dim) catch return FastEmbedderError.OutOfMemory;
+        defer self.allocator.free(query_embedding);
+        @memcpy(query_embedding, query_slice);
+
+        // Allocate results
+        var results = self.allocator.alloc(RerankResult, documents.len) catch return FastEmbedderError.OutOfMemory;
+        errdefer self.allocator.free(results);
+
+        // Process documents in batches (respects max_batch_size)
+        var processed: usize = 0;
+        while (processed < documents.len) {
+            const end = @min(processed + self.max_batch_size, documents.len);
+            const batch = documents[processed..end];
+
+            const doc_embeddings = try self.passageEmbedBatch(batch);
+
+            // Compute similarities for this batch
+            for (0..batch.len) |i| {
+                const doc_start = i * dim;
+                results[processed + i] = .{
+                    .score = normalize.cosineSimilarity(query_embedding, doc_embeddings[doc_start..][0..dim]),
+                    .index = processed + i,
+                };
+            }
+
+            processed = end;
+        }
+
+        // Sort by score descending
+        std.mem.sort(RerankResult, results, {}, struct {
+            fn lessThan(_: void, a: RerankResult, b: RerankResult) bool {
+                return b.score < a.score;
+            }
+        }.lessThan);
+
+        return results;
+    }
+
+    /// Bi-encoder rerank: compute similarity scores only (unsorted).
+    ///
+    /// Returns scores parallel to input documents array.
+    /// Caller owns returned slice and must free it.
+    pub fn rerankScores(self: *Self, query: []const u8, documents: []const []const u8) FastEmbedderError![]f32 {
+        if (documents.len == 0) {
+            return &[_]f32{};
+        }
+
+        const dim = self.config.hidden_dim;
+
+        // Embed query and copy to temp storage
+        const query_slice = try self.queryEmbed(query);
+        const query_embedding = self.allocator.alloc(f32, dim) catch return FastEmbedderError.OutOfMemory;
+        defer self.allocator.free(query_embedding);
+        @memcpy(query_embedding, query_slice);
+
+        var scores = self.allocator.alloc(f32, documents.len) catch return FastEmbedderError.OutOfMemory;
+        errdefer self.allocator.free(scores);
+
+        // Process documents in batches
+        var processed: usize = 0;
+        while (processed < documents.len) {
+            const end = @min(processed + self.max_batch_size, documents.len);
+            const batch = documents[processed..end];
+
+            const doc_embeddings = try self.passageEmbedBatch(batch);
+
+            for (0..batch.len) |i| {
+                const doc_start = i * dim;
+                scores[processed + i] = normalize.cosineSimilarity(query_embedding, doc_embeddings[doc_start..][0..dim]);
+            }
+
+            processed = end;
+        }
+
+        return scores;
+    }
+
+    // =========================================================================
     // Async Embedding Support
     // =========================================================================
 
@@ -561,6 +663,8 @@ pub const FastEmbedder = struct {
     }
 };
 
+const RerankResult = @import("lib.zig").RerankResult;
+
 // =============================================================================
 // Tests
 // =============================================================================
@@ -606,4 +710,13 @@ test "FastEmbedderError enum" {
     };
 
     try std.testing.expectEqual(@as(usize, 8), errors.len);
+}
+
+// =============================================================================
+// BI-ENCODER RERANKING TESTS
+// =============================================================================
+
+test "FastEmbedder has rerank methods" {
+    try std.testing.expect(@hasDecl(FastEmbedder, "rerank"));
+    try std.testing.expect(@hasDecl(FastEmbedder, "rerankScores"));
 }

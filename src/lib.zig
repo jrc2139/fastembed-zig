@@ -85,6 +85,15 @@ pub const PoolingStrategy = pooling.PoolingStrategy;
 // Normalization utilities
 pub const normalize = @import("normalize.zig");
 
+// Bi-encoder reranking result (used by Embedder.rerank and FastEmbedder.rerank)
+/// Result from bi-encoder reranking
+pub const RerankResult = struct {
+    /// Cosine similarity score (higher = more similar)
+    score: f32,
+    /// Original position in the input documents array
+    index: usize,
+};
+
 // Reranker (cross-encoder for semantic reranking)
 pub const reranker = @import("reranker.zig");
 pub const Reranker = reranker.Reranker;
