@@ -50,8 +50,8 @@ fn getOptimalRerankerOnnxFile() []const u8 {
 pub const RerankerModel = enum {
     /// Granite Embedding Reranker English R2 (CPU - auto-selects arch-specific quantized file)
     granite_reranker_english_r2,
-    /// Granite Embedding Reranker English R2 (O4 optimized for CUDA)
-    granite_reranker_english_r2_o4,
+    /// Granite Embedding Reranker English R2 (fp16 optimized for CUDA)
+    granite_reranker_english_r2_fp16,
 
     pub fn getConfig(self: RerankerModel) RerankerConfig {
         return switch (self) {
@@ -65,7 +65,7 @@ pub const RerankerModel = enum {
                 .max_seq_len = 8192,
                 .num_labels = 1,
             },
-            .granite_reranker_english_r2_o4 => .{
+            .granite_reranker_english_r2_fp16 => .{
                 .model_file = "onnx/model_f16_cuda.onnx", // FP16 optimized for CUDA
                 .hidden_dim = 768,
                 .max_seq_len = 8192,
@@ -80,7 +80,7 @@ pub const RerankerModel = enum {
     pub fn getModelFile(self: RerankerModel) []const u8 {
         return switch (self) {
             .granite_reranker_english_r2 => getOptimalRerankerOnnxFile(),
-            .granite_reranker_english_r2_o4 => "onnx/model_f16_cuda.onnx",
+            .granite_reranker_english_r2_fp16 => "onnx/model_f16_cuda.onnx",
         };
     }
 };
@@ -327,7 +327,7 @@ test "Reranker struct compiles" {
 test "RerankerModel enum" {
     const models = [_]RerankerModel{
         .granite_reranker_english_r2,
-        .granite_reranker_english_r2_o4,
+        .granite_reranker_english_r2_fp16,
     };
 
     for (models) |m| {
@@ -397,7 +397,7 @@ test "RerankerOptions thread configuration" {
 
 test "RerankerOptions all fields" {
     const opts = RerankerOptions{
-        .model = .granite_reranker_english_r2_o4,
+        .model = .granite_reranker_english_r2_fp16,
         .model_path = "/path/to/model",
         .max_seq_len = 4096,
         .execution_provider = .{ .cpu = {} },
@@ -405,7 +405,7 @@ test "RerankerOptions all fields" {
         .inter_op_num_threads = 4,
     };
 
-    try std.testing.expectEqual(RerankerModel.granite_reranker_english_r2_o4, opts.model);
+    try std.testing.expectEqual(RerankerModel.granite_reranker_english_r2_fp16, opts.model);
     try std.testing.expectEqualStrings("/path/to/model", opts.model_path.?);
     try std.testing.expectEqual(@as(usize, 4096), opts.max_seq_len);
     try std.testing.expectEqual(@as(u32, 8), opts.intra_op_num_threads);
@@ -436,8 +436,8 @@ test "RerankerModel.getConfig - CPU model" {
     try std.testing.expect(std.mem.endsWith(u8, config.model_file, ".onnx"));
 }
 
-test "RerankerModel.getConfig - O4 CUDA model" {
-    const config = RerankerModel.granite_reranker_english_r2_o4.getConfig();
+test "RerankerModel.getConfig - fp16 CUDA model" {
+    const config = RerankerModel.granite_reranker_english_r2_fp16.getConfig();
 
     try std.testing.expectEqual(@as(usize, 768), config.hidden_dim);
     try std.testing.expectEqual(@as(usize, 8192), config.max_seq_len);
@@ -448,7 +448,7 @@ test "RerankerModel.getConfig - O4 CUDA model" {
 test "RerankerModel.getModelFile returns valid path" {
     const models = [_]RerankerModel{
         .granite_reranker_english_r2,
-        .granite_reranker_english_r2_o4,
+        .granite_reranker_english_r2_fp16,
     };
 
     for (models) |model| {
@@ -458,8 +458,8 @@ test "RerankerModel.getModelFile returns valid path" {
     }
 }
 
-test "RerankerModel.getModelFile - O4 returns CUDA file" {
-    const file = RerankerModel.granite_reranker_english_r2_o4.getModelFile();
+test "RerankerModel.getModelFile - fp16 returns CUDA file" {
+    const file = RerankerModel.granite_reranker_english_r2_fp16.getModelFile();
     try std.testing.expectEqualStrings("onnx/model_f16_cuda.onnx", file);
 }
 
